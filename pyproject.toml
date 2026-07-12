@@ -5,7 +5,7 @@ description = ""
 authors = [
     {name = "Harsh"}
 ]
-requires-python = ">=3.13,<4.0"
+requires-python = ">=3.13,<3.14"
 dependencies = [
     "supabase (>=2.30.0,<3.0.0)",
     "postgrest (>=2.30.0,<3.0.0)",
@@ -21,6 +21,11 @@ dependencies = [
     "python-multipart (>=0.0.20,<0.0.21)"
 ]
 
+[tool.poetry]
+packages = [{ include = "app" }]
+
+[tool.vercel]
+entrypoint = "app.main:app"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

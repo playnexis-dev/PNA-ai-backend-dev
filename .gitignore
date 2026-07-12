@@ -8,6 +8,7 @@ __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
+dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
