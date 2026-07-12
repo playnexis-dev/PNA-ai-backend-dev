@@ -1,0 +1,29 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node artifacts
+node_modules/
+npm-debug.log*
+
+# Editor/OS files
+.vscode/
+.idea/
+.kilo/
+.DS_Store
+Thumbs.db

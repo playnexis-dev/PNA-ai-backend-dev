@@ -1,0 +1,25 @@
+{
+  "worktrees": {
+    "wt-1779910594556-1": {
+      "branch": "scientific-twilight",
+      "path": "c:\\Users\\harsh\\OneDrive\\Desktop\\Start-up\\PlayNexis2.0\\backend\\.kilo\\worktrees\\scientific-twilight",
+      "parentBranch": "feature-googleauth",
+      "createdAt": "2026-05-27T19:36:34.556Z",
+      "remote": "origin"
+    }
+  },
+  "sessions": {
+    "ses_1950fa174ffeHb04ulP53u9v9M": {
+      "worktreeId": "wt-1779910594556-1",
+      "createdAt": "2026-05-27T19:36:38.402Z"
+    }
+  },
+  "tabOrder": {
+    "local": [
+      "pending:1"
+    ]
+  },
+  "worktreeOrder": [
+    "wt-1779910594556-1"
+  ]
+}
