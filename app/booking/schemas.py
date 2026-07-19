@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 class BookingCreate(BaseModel):
     arena_id: str
+    turf_id: str | None = None
     slot_id: str | None = None
     slot_ids: list[str] = Field(default_factory=list)
     booking_date: date | None = None

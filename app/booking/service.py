@@ -64,6 +64,9 @@ def create_booking(context: AuthContext, payload: BookingCreate):
         if item["arena_id"] != payload.arena_id:
             raise HTTPException(status_code=400, detail="Slot does not belong to this arena")
 
+        if payload.turf_id and item.get("turf_id") and item.get("turf_id") != payload.turf_id:
+            raise HTTPException(status_code=400, detail="Slot does not belong to the selected turf")
+
         if item.get("status") != "active":
             raise HTTPException(status_code=400, detail="Selected slot is not available")
 
@@ -87,6 +90,8 @@ def create_booking(context: AuthContext, payload: BookingCreate):
         )
 
     _ensure_future_booking_time(booking_date, start_time)
+    turf_id = payload.turf_id or (slot or {}).get("turf_id")
+    _ensure_not_in_maintenance(arena["id"], turf_id, booking_date, start_time, end_time)
 
     total_amount = payload.total_amount
     if total_amount is None:
@@ -96,6 +101,8 @@ def create_booking(context: AuthContext, payload: BookingCreate):
             total_amount = float(arena.get("base_price") or 0)
 
     metadata = dict(payload.metadata or {})
+    if turf_id:
+        metadata["turf_id"] = turf_id
     if slots:
         metadata["selected_slot_ids"] = [item["id"] for item in slots]
         metadata["selected_slots"] = [str(item.get("start_time"))[:5] for item in slots]
@@ -104,6 +111,7 @@ def create_booking(context: AuthContext, payload: BookingCreate):
         "player_id": player["id"],
         "owner_id": arena["owner_id"],
         "arena_id": arena["id"],
+        "turf_id": turf_id,
         "slot_id": slot.get("id") if slot else payload.slot_id,
         "slot_date": str(booking_date),
         "booking_date": str(booking_date),
@@ -392,6 +400,51 @@ def _ensure_future_booking_time(booking_date: date | str, start_time: time | str
     booking_start = datetime.combine(parsed_date, parsed_time)
     if booking_start <= datetime.now():
         raise HTTPException(status_code=400, detail="Cannot book a slot that has already started or passed")
+
+
+def _ensure_not_in_maintenance(
+    arena_id: str,
+    turf_id: str | None,
+    booking_date: date | str,
+    start_time: time | str,
+    end_time: time | str,
+):
+    parsed_date = booking_date if isinstance(booking_date, date) else date.fromisoformat(str(booking_date))
+    parsed_start = start_time if isinstance(start_time, time) else time.fromisoformat(str(start_time)[:8])
+    parsed_end = end_time if isinstance(end_time, time) else time.fromisoformat(str(end_time)[:8])
+    booking_start = datetime.combine(parsed_date, parsed_start)
+    booking_end = datetime.combine(parsed_date, parsed_end)
+    windows = (
+        get_supabase_admin_client()
+        .table("arena_maintenance_windows")
+        .select("*")
+        .eq("arena_id", arena_id)
+        .eq("status", "active")
+        .execute()
+        .data
+        or []
+    )
+    for window in windows:
+        window_turf_id = window.get("turf_id")
+        if window_turf_id and turf_id and str(window_turf_id) != str(turf_id):
+            continue
+        if window_turf_id and not turf_id:
+            continue
+        window_start = _parse_datetime(window.get("start_at"))
+        window_end = _parse_datetime(window.get("end_at"))
+        if window_start and window_end and booking_start < window_end and booking_end > window_start:
+            raise HTTPException(
+                status_code=400,
+                detail="This arena is under maintenance for the selected time.",
+            )
+
+
+def _parse_datetime(value):
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None)
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00")).replace(tzinfo=None)
 
 
 def _increment_slot_booking(slot: dict):

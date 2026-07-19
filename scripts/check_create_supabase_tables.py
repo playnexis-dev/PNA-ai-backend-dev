@@ -26,7 +26,9 @@ REQUIRED_TABLES = (
     "owners",
     "profile_phone_registry",
     "arenas",
+    "turfs",
     "arena_slots",
+    "arena_maintenance_windows",
     "bookings",
     "payments",
     "reviews",
@@ -106,6 +108,9 @@ async def get_required_table_status(connection):
 
 
 async def apply_migrations(connection, files: list[Path]):
+    _, missing_before = await get_required_table_status(connection)
+    missing_set = set(missing_before)
+
     async with connection.transaction():
         await connection.execute(
             "select pg_advisory_xact_lock(hashtext($1::text))",
@@ -122,6 +127,10 @@ async def apply_migrations(connection, files: list[Path]):
         )
 
         for file in files:
+            if not should_run_migration(file, missing_set):
+                print(f"Skipping migration already covered by existing tables: {file.name}")
+                continue
+
             sql = file.read_text(encoding="utf-8")
             checksum = hashlib.sha256(sql.encode("utf-8")).hexdigest()
             print(f"Running migration: {file.name}")
@@ -137,6 +146,28 @@ async def apply_migrations(connection, files: list[Path]):
                 file.name,
                 checksum,
             )
+
+
+def should_run_migration(file: Path, missing_tables: set[str]) -> bool:
+    name = file.name
+    if name.startswith("202607190001"):
+        return bool({"turfs", "arena_maintenance_windows"} & missing_tables)
+
+    if name.startswith("20260609"):
+        return bool({
+            "arenas",
+            "arena_slots",
+            "bookings",
+            "payments",
+            "reviews",
+            "notifications",
+            "analytics_events",
+        } & missing_tables)
+
+    if name.startswith("20260528") or name.startswith("20260601"):
+        return bool({"user_roles", "players", "owners", "profile_phone_registry"} & missing_tables)
+
+    return True
 
 
 def print_connection_hint(database_url: str):
