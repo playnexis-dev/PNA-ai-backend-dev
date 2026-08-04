@@ -16,6 +16,7 @@ from app.arena.schemas import (
     TurfCreate,
     TurfUpdate,
 )
+from app.arena.proximity import rank_arenas_by_location
 from app.core.auth_context import AuthContext, require_role
 from app.core.config import settings
 from app.core.supabase import get_supabase_admin_client, get_supabase_client
@@ -135,6 +136,9 @@ def _sanitize_public_arena(arena: dict):
 def list_active_arenas(
     city: str | None = None,
     sport: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    radius_km: float = 50,
 ):
     client = get_supabase_client()
     query = (
@@ -142,16 +146,33 @@ def list_active_arenas(
         .select("*, arena_slots(*), turfs(*)")
         .eq("is_active", True)
         .eq("status", "active")
-        .order("rating", desc=True)
     )
 
-    if city:
-        query = query.ilike("city", f"%{city}%")
-
+    arenas = query.execute().data or []
     if sport:
-        query = query.ilike("sport", f"%{sport}%")
+        sport_key = sport.strip().casefold()
+        arenas = [arena for arena in arenas if _arena_supports_sport(arena, sport_key)]
 
-    return [_sanitize_public_arena(arena) for arena in (query.execute().data or [])]
+    ranked = rank_arenas_by_location(
+        arenas,
+        city=city,
+        latitude=latitude,
+        longitude=longitude,
+        radius_km=radius_km,
+    )
+    return [_sanitize_public_arena(arena) for arena in ranked]
+
+
+def _arena_supports_sport(arena: dict, sport_key: str) -> bool:
+    if not sport_key:
+        return True
+    if sport_key in str(arena.get("sport") or "").casefold():
+        return True
+    for turf in arena.get("turfs") or []:
+        sports = (turf.get("metadata") or {}).get("sports") or [turf.get("sport")]
+        if any(sport_key == str(item or "").strip().casefold() for item in sports):
+            return True
+    return False
 
 
 def get_arena_detail(arena_id: str):

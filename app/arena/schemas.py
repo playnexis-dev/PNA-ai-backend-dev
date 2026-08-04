@@ -14,8 +14,8 @@ class ArenaBase(BaseModel):
     city: str = Field(min_length=1, max_length=50)
     state: str | None = None
     country: str = "India"
-    latitude: float | None = None
-    longitude: float | None = None
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
     base_price: float = Field(default=0, ge=0)
     price_unit: str = "slot"
     amenities: list[str] = Field(min_length=1)
@@ -46,8 +46,8 @@ class ArenaUpdate(BaseModel):
     city: str | None = Field(default=None, min_length=1, max_length=50)
     state: str | None = None
     country: str | None = None
-    latitude: float | None = None
-    longitude: float | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
     base_price: float | None = Field(default=None, ge=0)
     price_unit: str | None = None
     status: str | None = Field(default=None, pattern="^(active|inactive)$")

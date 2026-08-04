@@ -60,8 +60,19 @@ router = APIRouter(prefix="/arenas", tags=["Arenas"])
 async def public_arenas(
     city: str | None = Query(default=None),
     sport: str | None = Query(default=None),
+    latitude: float | None = Query(default=None, ge=-90, le=90),
+    longitude: float | None = Query(default=None, ge=-180, le=180),
+    radius_km: float = Query(default=50, ge=1, le=50),
 ):
-    return list_active_arenas(city=city, sport=sport)
+    if (latitude is None) != (longitude is None):
+        raise HTTPException(status_code=422, detail="Latitude and longitude must be provided together")
+    return list_active_arenas(
+        city=city,
+        sport=sport,
+        latitude=latitude,
+        longitude=longitude,
+        radius_km=radius_km,
+    )
 
 
 @router.get("/owner")
