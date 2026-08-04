@@ -87,6 +87,10 @@ def migration_files() -> list[Path]:
     return files
 
 
+def has_always_run_schema_patches(files: list[Path]) -> bool:
+    return any(file.name.startswith(("202608010001", "202608040001")) for file in files)
+
+
 async def connect(database_url: str):
     return await asyncpg.connect(database_url, statement_cache_size=0)
 
@@ -150,6 +154,9 @@ async def apply_migrations(connection, files: list[Path]):
 
 def should_run_migration(file: Path, missing_tables: set[str]) -> bool:
     name = file.name
+    if name.startswith(("202608010001", "202608040001")):
+        return True
+
     if name.startswith("202607190001"):
         return bool({"turfs", "arena_maintenance_windows"} & missing_tables)
 
@@ -235,12 +242,14 @@ async def main():
         if args.check_only:
             return 1 if missing else 0
 
-        if not missing and not args.force:
+        files = migration_files()
+
+        if not missing and not args.force and not has_always_run_schema_patches(files):
             print("\nAll required tables already exist. No migration needed.")
             return 0
 
         print("\nCreating/fixing schema using idempotent migrations...")
-        await apply_migrations(connection, migration_files())
+        await apply_migrations(connection, files)
 
         existing_after, missing_after = await get_required_table_status(connection)
         print("\nExisting required tables after migration:")

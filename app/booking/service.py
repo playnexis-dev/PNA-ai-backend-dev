@@ -60,11 +60,23 @@ def create_booking(context: AuthContext, payload: BookingCreate):
     slots = _get_slots(requested_slot_ids) if requested_slot_ids else []
     slot = slots[0] if slots else None
 
+    slot_turf_ids = {
+        str(item.get("turf_id"))
+        for item in slots
+        if item.get("turf_id")
+    }
+    if len(slot_turf_ids) > 1:
+        raise HTTPException(status_code=400, detail="Selected slots must belong to the same turf")
+    if slots and any(not item.get("turf_id") for item in slots):
+        raise HTTPException(status_code=400, detail="Every selected slot must belong to a turf")
+    if payload.turf_id and slot_turf_ids and str(payload.turf_id) not in slot_turf_ids:
+        raise HTTPException(status_code=400, detail="Selected slots do not belong to the selected turf")
+
     for item in slots:
         if item["arena_id"] != payload.arena_id:
             raise HTTPException(status_code=400, detail="Slot does not belong to this arena")
 
-        if payload.turf_id and item.get("turf_id") and item.get("turf_id") != payload.turf_id:
+        if payload.turf_id and str(item.get("turf_id")) != str(payload.turf_id):
             raise HTTPException(status_code=400, detail="Slot does not belong to the selected turf")
 
         if item.get("status") != "active":
@@ -90,7 +102,7 @@ def create_booking(context: AuthContext, payload: BookingCreate):
         )
 
     _ensure_future_booking_time(booking_date, start_time)
-    turf_id = payload.turf_id or (slot or {}).get("turf_id")
+    turf_id = payload.turf_id or (next(iter(slot_turf_ids)) if slot_turf_ids else None)
     _ensure_not_in_maintenance(arena["id"], turf_id, booking_date, start_time, end_time)
 
     total_amount = payload.total_amount
@@ -345,6 +357,9 @@ def _get_arena(arena_id: str):
 
     if not response or not response.data:
         raise HTTPException(status_code=404, detail="Arena not found")
+
+    if response.data.get("status") != "active" or response.data.get("booking_enabled") is False:
+        raise HTTPException(status_code=400, detail="Bookings are currently disabled for this arena")
 
     return response.data
 

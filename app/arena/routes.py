@@ -27,7 +27,8 @@ from app.arena.service import (
     delete_arena,
     delete_slot,
     delete_turf,
-    get_arena_detail,
+    get_arena_contact,
+    get_public_arena_detail,
     get_owner_arena_detail,
     list_active_arenas,
     list_available_slots,
@@ -37,8 +38,10 @@ from app.arena.service import (
     list_owner_turfs,
     list_public_turfs,
     remove_arena_image,
+    remove_turf_media,
     reorder_arena_images,
     set_arena_active,
+    set_arena_booking_enabled,
     set_turf_active,
     update_arena,
     update_slot,
@@ -107,7 +110,15 @@ async def owner_create_arena_with_qr(
 
 @router.get("/{arena_id}")
 async def arena_detail(arena_id: str):
-    return get_arena_detail(arena_id)
+    return get_public_arena_detail(arena_id)
+
+
+@router.get("/{arena_id}/contact")
+async def authenticated_arena_contact(
+    arena_id: str,
+    context: AuthContext = Depends(get_current_auth_context),
+):
+    return get_arena_contact(context, arena_id)
 
 
 @router.patch("/{arena_id}")
@@ -128,6 +139,15 @@ async def owner_set_arena_active(
     return set_arena_active(context, arena_id, is_active)
 
 
+@router.patch("/{arena_id}/booking-enabled")
+async def owner_set_arena_booking_enabled(
+    arena_id: str,
+    booking_enabled: bool,
+    context: AuthContext = Depends(get_current_auth_context),
+):
+    return set_arena_booking_enabled(context, arena_id, booking_enabled)
+
+
 @router.delete("/{arena_id}")
 async def owner_delete_arena(
     arena_id: str,
@@ -140,8 +160,9 @@ async def owner_delete_arena(
 async def arena_available_slots(
     arena_id: str,
     slot_date: date | None = Query(default=None),
+    turf_id: str | None = Query(default=None),
 ):
-    return list_available_slots(arena_id, slot_date)
+    return list_available_slots(arena_id, slot_date, turf_id)
 
 
 @router.get("/{arena_id}/turfs")
@@ -211,6 +232,18 @@ async def owner_upload_turf_media(
         file.content_type or "application/octet-stream",
         content,
     )
+
+
+@router.delete("/{arena_id}/turfs/{turf_id}/media")
+async def owner_remove_turf_media(
+    arena_id: str,
+    turf_id: str,
+    payload: ArenaImageDelete,
+    context: AuthContext = Depends(get_current_auth_context),
+):
+    if not payload.url:
+        raise HTTPException(status_code=400, detail="Media URL is required")
+    return remove_turf_media(context, arena_id, turf_id, payload.url)
 
 
 @router.get("/{arena_id}/maintenance")

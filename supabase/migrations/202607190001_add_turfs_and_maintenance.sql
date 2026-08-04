@@ -46,40 +46,6 @@ alter table public.turfs
 alter table public.turfs
     add column if not exists updated_at timestamptz not null default now();
 
-insert into public.turfs (
-    arena_id,
-    owner_id,
-    name,
-    sport,
-    price_per_slot,
-    size,
-    flooring,
-    capacity,
-    status,
-    is_active,
-    media,
-    metadata
-)
-select
-    arenas.id,
-    arenas.owner_id,
-    'Main Turf',
-    coalesce(nullif(arenas.sport, ''), 'Multi-sport'),
-    coalesce(arenas.base_price, 0),
-    coalesce(nullif(arenas.metadata ->> 'arena_size', ''), 'Standard'),
-    coalesce(nullif(arenas.metadata ->> 'flooring', ''), 'Standard'),
-    1,
-    'active',
-    true,
-    coalesce(arenas.images, '[]'::jsonb),
-    '{"auto_generated": true}'::jsonb
-from public.arenas arenas
-where not exists (
-    select 1
-    from public.turfs
-    where turfs.arena_id = arenas.id
-);
-
 alter table public.arena_slots
     add column if not exists turf_id uuid references public.turfs(id) on delete set null;
 

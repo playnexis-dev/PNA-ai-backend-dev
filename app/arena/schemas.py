@@ -8,7 +8,7 @@ class ArenaBase(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     name: str = Field(min_length=1, max_length=100)
-    sport: str = "Multi-sport"
+    sport: str = "Arena"
     description: str = Field(min_length=1, max_length=3000)
     address: str = Field(min_length=1, max_length=300)
     city: str = Field(min_length=1, max_length=50)
@@ -41,6 +41,7 @@ class ArenaUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     sport: str | None = None
     description: str | None = Field(default=None, min_length=1, max_length=3000)
+    synopsis: str | None = Field(default=None, min_length=1, max_length=2000)
     address: str | None = Field(default=None, min_length=1, max_length=300)
     city: str | None = Field(default=None, min_length=1, max_length=50)
     state: str | None = None
@@ -51,6 +52,7 @@ class ArenaUpdate(BaseModel):
     price_unit: str | None = None
     status: str | None = Field(default=None, pattern="^(active|inactive)$")
     is_active: bool | None = None
+    booking_enabled: bool | None = None
     amenities: list[str] | None = Field(default=None, min_length=1)
     images: list[str] | None = None
     metadata: dict[str, Any] | None = None
@@ -65,7 +67,7 @@ class ArenaUpdate(BaseModel):
 
 
 class SlotCreate(BaseModel):
-    turf_id: str | None = None
+    turf_id: str
     slot_date: date
     start_time: time
     end_time: time
@@ -113,8 +115,9 @@ class TurfCreate(BaseModel):
     sports: list[str] = Field(default_factory=list)
     shape: str = Field(min_length=1, max_length=50)
     size_unit: str = Field(min_length=1, max_length=20)
-    dimension_length: float = Field(gt=0)
-    dimension_width: float = Field(gt=0)
+    area: float = Field(gt=0)
+    dimension_length: float | None = Field(default=None, gt=0)
+    dimension_width: float | None = Field(default=None, gt=0)
     price_per_slot: float = Field(ge=0)
     peak_surcharge: float = Field(default=0, ge=0)
     discount_amount: float = Field(default=0, ge=0)
@@ -140,6 +143,7 @@ class TurfUpdate(BaseModel):
     sports: list[str] | None = None
     shape: str | None = Field(default=None, min_length=1, max_length=50)
     size_unit: str | None = Field(default=None, min_length=1, max_length=20)
+    area: float | None = Field(default=None, gt=0)
     dimension_length: float | None = Field(default=None, gt=0)
     dimension_width: float | None = Field(default=None, gt=0)
     price_per_slot: float | None = Field(default=None, ge=0)

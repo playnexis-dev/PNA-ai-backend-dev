@@ -35,7 +35,7 @@ def get_player_dashboard(context: AuthContext):
     recommended_arenas = (
         get_supabase_client()
         .table("arenas")
-        .select("*")
+        .select("*, turfs(*)")
         .eq("is_active", True)
         .eq("status", "active")
         .order("rating", desc=True)
@@ -71,7 +71,7 @@ def get_owner_dashboard(context: AuthContext):
 
     arenas = (
         client.table("arenas")
-        .select("*")
+        .select("*, turfs(*)")
         .eq("owner_id", owner["id"])
         .order("created_at", desc=True)
         .execute()

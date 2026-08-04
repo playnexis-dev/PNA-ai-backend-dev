@@ -22,6 +22,7 @@ from app.core.supabase import get_supabase_admin_client, get_supabase_client
 
 
 ARENA_DETAIL_METADATA_FIELDS = (
+    "synopsis",
     "contact_country_code",
     "contact_number",
     "contact_email",
@@ -73,6 +74,7 @@ TURF_METADATA_FIELDS = (
     "sports",
     "shape",
     "size_unit",
+    "area",
     "dimension_length",
     "dimension_width",
     "peak_surcharge",
@@ -113,6 +115,23 @@ def _unique_strings(values):
     return unique
 
 
+def _sanitize_public_arena(arena: dict):
+    public_arena = dict(arena)
+    metadata = dict(public_arena.get("metadata") or {})
+    contact_number = "".join(
+        character
+        for character in str(metadata.pop("contact_number", ""))
+        if character.isdigit()
+    )
+    metadata["contact_number_masked"] = (
+        f"{contact_number[:4]}{'*' * max(len(contact_number) - 4, 0)}"
+        if contact_number
+        else ""
+    )
+    public_arena["metadata"] = metadata
+    return public_arena
+
+
 def list_active_arenas(
     city: str | None = None,
     sport: str | None = None,
@@ -132,7 +151,7 @@ def list_active_arenas(
     if sport:
         query = query.ilike("sport", f"%{sport}%")
 
-    return query.execute().data or []
+    return [_sanitize_public_arena(arena) for arena in (query.execute().data or [])]
 
 
 def get_arena_detail(arena_id: str):
@@ -214,6 +233,7 @@ def create_arena(context: AuthContext, payload: ArenaCreate):
     data["owner_id"] = owner["id"]
     data["status"] = "active"
     data["is_active"] = True
+    data["booking_enabled"] = True
     data["price_unit"] = "slot"
 
     try:
@@ -225,8 +245,6 @@ def create_arena(context: AuthContext, payload: ArenaCreate):
         raise HTTPException(status_code=500, detail="Failed to create arena")
 
     arena = response.data[0]
-    _ensure_default_turf(arena)
-    _ensure_rolling_week_slots(arena["id"])
     return arena
 
 
@@ -505,6 +523,24 @@ def set_arena_active(context: AuthContext, arena_id: str, is_active: bool):
     )
 
 
+def set_arena_booking_enabled(context: AuthContext, arena_id: str, booking_enabled: bool):
+    owner = require_role(context, "owner")
+    _ensure_owner_arena(context, owner["id"], arena_id)
+    response = (
+        _client(context)
+        .table("arenas")
+        .update({"booking_enabled": booking_enabled})
+        .eq("id", arena_id)
+        .eq("owner_id", owner["id"])
+        .execute()
+    )
+
+    if not response.data:
+        raise HTTPException(status_code=404, detail="Arena not found")
+
+    return response.data[0]
+
+
 def delete_arena(context: AuthContext, arena_id: str):
     owner = require_role(context, "owner")
     _ensure_owner_arena(context, owner["id"], arena_id)
@@ -720,6 +756,42 @@ def upload_turf_media(
     return response.data[0]
 
 
+def remove_turf_media(
+    context: AuthContext,
+    arena_id: str,
+    turf_id: str,
+    media_url: str,
+):
+    owner = require_role(context, "owner")
+    turf = _ensure_owner_turf(context, owner["id"], arena_id, turf_id)
+    current_media = list(turf.get("media") or [])
+    if media_url not in current_media:
+        raise HTTPException(status_code=404, detail="Turf media was not found")
+
+    media = [item for item in current_media if item != media_url]
+    response = (
+        _client(context)
+        .table("turfs")
+        .update({"media": media})
+        .eq("id", turf_id)
+        .eq("arena_id", arena_id)
+        .eq("owner_id", owner["id"])
+        .execute()
+    )
+    if not response.data:
+        raise HTTPException(status_code=500, detail="Failed to remove turf media")
+
+    object_path = _storage_path_from_public_url(media_url)
+    if object_path:
+        try:
+            get_supabase_admin_client().storage.from_(settings.ARENA_MEDIA_BUCKET).remove([object_path])
+        except Exception:
+            # The database reference is authoritative even if storage cleanup is delayed.
+            pass
+
+    return response.data[0]
+
+
 def set_turf_active(context: AuthContext, arena_id: str, turf_id: str, is_active: bool):
     return update_turf(
         context,
@@ -864,7 +936,41 @@ def cancel_maintenance_window(
     return response.data[0]
 
 
-def list_available_slots(arena_id: str, slot_date: date | None = None):
+def list_available_slots(
+    arena_id: str,
+    slot_date: date | None = None,
+    turf_id: str | None = None,
+):
+    arena_response = (
+        get_supabase_client()
+        .table("arenas")
+        .select("id, booking_enabled")
+        .eq("id", arena_id)
+        .eq("is_active", True)
+        .eq("status", "active")
+        .maybe_single()
+        .execute()
+    )
+    if not arena_response or not arena_response.data:
+        raise HTTPException(status_code=404, detail="Arena not found")
+    if arena_response.data.get("booking_enabled") is False:
+        return []
+
+    if turf_id:
+        turf_response = (
+            get_supabase_client()
+            .table("turfs")
+            .select("id")
+            .eq("id", turf_id)
+            .eq("arena_id", arena_id)
+            .eq("is_active", True)
+            .eq("status", "active")
+            .maybe_single()
+            .execute()
+        )
+        if not turf_response or not turf_response.data:
+            return []
+
     if slot_date and date.today() <= slot_date <= date.today() + timedelta(days=6):
         _ensure_rolling_week_slots(arena_id)
 
@@ -880,6 +986,8 @@ def list_available_slots(arena_id: str, slot_date: date | None = None):
 
     if slot_date:
         query = query.eq("slot_date", slot_date.isoformat())
+    if turf_id:
+        query = query.eq("turf_id", turf_id)
 
     slots = query.execute().data or []
     available = []
@@ -894,13 +1002,14 @@ def list_available_slots(arena_id: str, slot_date: date | None = None):
 
 def create_slot(context: AuthContext, arena_id: str, payload: SlotCreate):
     owner = require_role(context, "owner")
-    arena = _ensure_owner_arena(context, owner["id"], arena_id)
+    _ensure_owner_arena(context, owner["id"], arena_id)
     if payload.slot_date < date.today():
         raise HTTPException(status_code=400, detail="Slot date cannot be in the past")
 
     data = _clean_payload(payload)
     data["arena_id"] = arena_id
-    data["turf_id"] = data.get("turf_id") or _ensure_default_turf(arena)["id"]
+    if not data.get("turf_id"):
+        raise HTTPException(status_code=400, detail="Create and select a turf before adding slots")
     _ensure_owner_turf(context, owner["id"], arena_id, data["turf_id"])
 
     try:
@@ -1000,17 +1109,7 @@ def _ensure_rolling_week_slots(arena_id: str):
         or []
     )
     if not all_slots:
-        arena = (
-            client.table("arenas")
-            .select("*")
-            .eq("id", arena_id)
-            .maybe_single()
-            .execute()
-            .data
-            or {}
-        )
-        turf = _ensure_default_turf(arena)
-        return _create_default_week_slots(arena_id, float(arena.get("base_price") or 0), turf["id"])
+        return []
 
     slots_by_date: dict[str, list[dict]] = {}
     for slot in all_slots:
@@ -1041,31 +1140,6 @@ def _ensure_rolling_week_slots(arena_id: str):
 
     try:
         return client.table("arena_slots").insert(rows).execute().data or []
-    except APIError:
-        return []
-
-
-def _create_default_week_slots(arena_id: str, price: float, turf_id: str | None = None):
-    today = date.today()
-    rows = []
-    for offset in range(7):
-        slot_date = today + timedelta(days=offset)
-        for hour in range(6, 19):
-            rows.append({
-                "arena_id": arena_id,
-                "turf_id": turf_id,
-                "slot_date": slot_date.isoformat(),
-                "start_time": time(hour, 0).isoformat(),
-                "end_time": time(hour + 1, 0).isoformat(),
-                "price": price,
-                "capacity": 1,
-                "booked_count": 0,
-                "status": "active",
-                "metadata": {"auto_generated": True, "default_template": True},
-            })
-
-    try:
-        return get_supabase_admin_client().table("arena_slots").insert(rows).execute().data or []
     except APIError:
         return []
 
@@ -1194,44 +1268,6 @@ def _arena_public_url(arena_id: str):
     return f"{settings.FRONTEND_URL.rstrip('/')}/app/arena/{arena_id}"
 
 
-def _ensure_default_turf(arena: dict):
-    if not arena:
-        raise HTTPException(status_code=404, detail="Arena not found")
-    client = get_supabase_admin_client()
-    existing = (
-        client.table("turfs")
-        .select("*")
-        .eq("arena_id", arena["id"])
-        .order("created_at")
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if existing:
-        return existing[0]
-
-    metadata = dict(arena.get("metadata") or {})
-    row = {
-        "arena_id": arena["id"],
-        "owner_id": arena["owner_id"],
-        "name": "Main Turf",
-        "sport": arena.get("sport") or "Multi-sport",
-        "price_per_slot": float(arena.get("base_price") or 0),
-        "size": str(metadata.get("arena_size") or "Standard"),
-        "flooring": str(metadata.get("flooring") or "Standard"),
-        "capacity": 1,
-        "status": "active",
-        "is_active": True,
-        "media": arena.get("images") or [],
-        "metadata": {"auto_generated": True},
-    }
-    response = client.table("turfs").insert(row).execute()
-    if not response.data:
-        raise HTTPException(status_code=500, detail="Failed to create default turf")
-    return response.data[0]
-
-
 def _ensure_owner_turf(context: AuthContext, owner_id: str, arena_id: str, turf_id: str):
     response = (
         _client(context)
@@ -1246,6 +1282,19 @@ def _ensure_owner_turf(context: AuthContext, owner_id: str, arena_id: str, turf_
     if not response or not response.data:
         raise HTTPException(status_code=404, detail="Turf not found")
     return response.data
+
+
+def get_public_arena_detail(arena_id: str):
+    return _sanitize_public_arena(get_arena_detail(arena_id))
+
+
+def get_arena_contact(context: AuthContext, arena_id: str):
+    arena = get_arena_detail(arena_id)
+    metadata = arena.get("metadata") or {}
+    return {
+        "contact_country_code": metadata.get("contact_country_code") or "",
+        "contact_number": metadata.get("contact_number") or "",
+    }
 
 
 def _slot_overlaps_maintenance(arena_id: str, slot: dict):

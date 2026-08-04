@@ -38,7 +38,10 @@ class SignupRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-    role: UserRole
+
+
+class RefreshSessionRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
 
 
 class GoogleSessionRequest(BaseModel):

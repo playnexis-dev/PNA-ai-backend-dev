@@ -34,7 +34,7 @@ def _base64_url_encode(value: bytes):
 
 
 def _create_google_oauth_ticket(
-    role: UserRole,
+    role: UserRole | None,
     code_verifier: str,
     intent: str,
     frontend_url: str,
@@ -95,16 +95,25 @@ def _read_google_oauth_ticket(oauth_ticket: str):
             detail="Google login session expired. Please try again.",
         )
 
-    if payload.get("role") not in ("player", "owner"):
+    intent = payload.get("intent")
+    role = payload.get("role")
+
+    if intent not in ("signup", "login"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Google login intent. Please try again.",
+        )
+
+    if role is not None and role not in ("player", "owner"):
         raise HTTPException(
             status_code=400,
             detail="Invalid Google login role. Please try again.",
         )
 
-    if payload.get("intent") not in ("signup", "login"):
+    if intent == "signup" and role is None:
         raise HTTPException(
             status_code=400,
-            detail="Invalid Google login intent. Please try again.",
+            detail="Account type is required for Google signup.",
         )
 
     return payload
@@ -155,6 +164,13 @@ async def complete_oauth_profile(token: str, payload):
 
     user_id = auth_user.id
     email = auth_user.email
+    stored_role = _require_role_for_user(user_id, token)
+    if payload.role != stored_role:
+        raise HTTPException(
+            status_code=403,
+            detail="Account role does not match the authenticated user",
+        )
+
     metadata = auth_user.user_metadata or {}
     clean_phone = _sanitize_phone(payload.phone)
 
@@ -168,7 +184,7 @@ async def complete_oauth_profile(token: str, payload):
     avatar_url = metadata.get("avatar_url") or metadata.get("picture")
     admin_client = get_supabase_admin_client()
 
-    if payload.role == "owner":
+    if stored_role == "owner":
         existing = (
             admin_client.table("owners")
             .select("*")
@@ -211,7 +227,7 @@ async def complete_oauth_profile(token: str, payload):
             "profile": response.data[0],
         }
 
-    if payload.role == "player":
+    if stored_role == "player":
         existing = (
             admin_client.table("players")
             .select("*")
@@ -341,30 +357,16 @@ def _ensure_role_for_user(
         return existing_role
 
     if existing_role in ("player", "owner") and existing_role != fallback_role:
-        logger.info(
-            "Updating user role user_id=%s from_role=%s to_role=%s",
-            user_id,
-            existing_role,
-            fallback_role,
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This account is already registered as {existing_role}. "
+                f"Please log in instead."
+            ),
         )
-        try:
-            response = (
-                client
-                .table("user_roles")
-                .update({"role": fallback_role})
-                .eq("user_id", user_id)
-                .execute()
-            )
-        except APIError as exc:
-            raise _auth_data_error(exc) from exc
 
-        if not response.data:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to update user role",
-            )
-
-        return fallback_role
+    if existing_role is not None:
+        raise HTTPException(status_code=403, detail="Account setup is incomplete")
 
     logger.info(
         "Creating user role user_id=%s role=%s",
@@ -391,6 +393,17 @@ def _ensure_role_for_user(
         )
 
     return fallback_role
+
+
+def _require_role_for_user(
+    user_id: str,
+    access_token: str | None = None,
+):
+    role = _get_role_for_user(user_id, access_token)
+    if role not in ("player", "owner"):
+        raise HTTPException(status_code=403, detail="Account setup is incomplete")
+
+    return role
 
 
 def _build_auth_response(
@@ -750,7 +763,6 @@ async def signup_user(
 async def login_user(
     email: str,
     password: str,
-    role: UserRole,
 ):
     try:
         response = supabase.auth.sign_in_with_password(
@@ -777,9 +789,8 @@ async def login_user(
             detail="Missing active session",
         )
 
-    final_role = _ensure_role_for_user(
+    final_role = _require_role_for_user(
         response.user.id,
-        role,
         response.session.access_token,
     )
 
@@ -788,6 +799,9 @@ async def login_user(
         final_role,
         response.session.access_token,
     )
+    if profile is None:
+        raise HTTPException(status_code=403, detail="Account setup is incomplete")
+
     needs_profile_completion = not (profile or {}).get("phone")
 
     auth_response = _build_auth_response(
@@ -802,8 +816,31 @@ async def login_user(
     return auth_response
 
 
+async def refresh_user_session(refresh_token: str):
+    try:
+        response = supabase.auth.refresh_session(refresh_token)
+    except AuthApiError as exc:
+        raise HTTPException(
+            status_code=401,
+            detail="Session expired. Please log in again.",
+        ) from exc
+
+    if not response.session or not response.session.access_token:
+        raise HTTPException(
+            status_code=401,
+            detail="Session expired. Please log in again.",
+        )
+
+    return {
+        "session": {
+            "access_token": response.session.access_token,
+            "refresh_token": response.session.refresh_token or refresh_token,
+        }
+    }
+
+
 async def get_google_oauth_url(
-    role: UserRole,
+    role: UserRole | None,
     intent: str = "login",
     prompt: str | None = None,
     frontend_url: str | None = None,
@@ -847,7 +884,6 @@ async def get_google_oauth_url(
 async def complete_google_session(
     access_token: str,
     refresh_token: str | None,
-    role: UserRole,
 ):
     user_response = supabase.auth.get_user(
         access_token,
@@ -859,9 +895,8 @@ async def complete_google_session(
             detail="Invalid Google session",
         )
 
-    final_role = _ensure_role_for_user(
+    final_role = _require_role_for_user(
         user_response.user.id,
-        role,
         access_token,
     )
 
@@ -888,8 +923,9 @@ async def complete_google_code(
     redirect_to = f"{settings.BACKEND_URL}/auth/google/callback/{oauth_ticket}"
 
     logger.info(
-        "Received Google code exchange request role=%s code_length=%s",
-        oauth_state["role"],
+        "Received Google code exchange request role=%s intent=%s code_length=%s",
+        oauth_state.get("role"),
+        oauth_state["intent"],
         len(code),
     )
 
@@ -928,29 +964,60 @@ async def complete_google_code(
             detail="Invalid Google authorization code",
         )
 
-    final_role = _ensure_role_for_user(
-        response.user.id,
-        oauth_state["role"],
-        response.session.access_token,
-    )
-
-    existing_profile = _get_profile_for_role(
-        response.user.id,
-        final_role,
-        response.session.access_token,
-    )
-
-    if oauth_state["intent"] == "signup" and existing_profile:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Account already exists for this Google email. "
-                "Please log in or use another Google account."
-            ),
+    if oauth_state["intent"] == "login":
+        final_role = _require_role_for_user(
+            response.user.id,
+            response.session.access_token,
         )
+        profile = _get_profile_for_role(
+            response.user.id,
+            final_role,
+            response.session.access_token,
+        )
+        if profile is None:
+            raise HTTPException(status_code=403, detail="Account setup is incomplete")
+    else:
+        requested_role = oauth_state["role"]
+        stored_role = _get_role_for_user(
+            response.user.id,
+            response.session.access_token,
+        )
+        if stored_role in ("player", "owner"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This Google account is already registered as {stored_role}. "
+                    "Please log in or use another Google account."
+                ),
+            )
+        if stored_role is not None:
+            raise HTTPException(status_code=403, detail="Account setup is incomplete")
 
-    profile = existing_profile
-    if profile is None:
+        existing_profile = _get_profile_for_role(
+            response.user.id,
+            requested_role,
+            response.session.access_token,
+        )
+        opposite_role = "owner" if requested_role == "player" else "player"
+        opposite_profile = _get_profile_for_role(
+            response.user.id,
+            opposite_role,
+            response.session.access_token,
+        )
+        if existing_profile or opposite_profile:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This Google account already has a PLAYNEXIS profile. "
+                    "Please log in or use another Google account."
+                ),
+            )
+
+        final_role = _ensure_role_for_user(
+            response.user.id,
+            requested_role,
+            response.session.access_token,
+        )
         profile = await _ensure_profile_for_role(
             response.user,
             final_role,

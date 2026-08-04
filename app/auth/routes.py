@@ -12,6 +12,7 @@ from fastapi.responses import RedirectResponse
 
 from app.auth.schemas import (
     LoginRequest,
+    RefreshSessionRequest,
     SignupRequest,
     UserRole,
     OAuthCompleteRequest,
@@ -25,6 +26,7 @@ from app.auth.service import (
     get_frontend_url_from_oauth_ticket,
     get_google_oauth_url,
     login_user,
+    refresh_user_session,
     signup_user,
     complete_oauth_profile,
     send_phone_otp,
@@ -132,7 +134,6 @@ async def login(
         return await login_user(
             payload.email,
             payload.password,
-            payload.role,
         )
 
     except HTTPException:
@@ -140,15 +141,19 @@ async def login(
 
     except Exception:
         logger.exception(
-            "Login failed for email=%s role=%s",
+            "Login failed for email=%s",
             payload.email,
-            payload.role,
         )
 
         raise HTTPException(
             status_code=500,
             detail="Login failed",
         )
+
+
+@router.post("/refresh")
+async def refresh_session(payload: RefreshSessionRequest):
+    return await refresh_user_session(payload.refresh_token)
 
 
 @router.get("/google")
@@ -250,25 +255,29 @@ async def google_auth(
                 ),
             )
 
-        if role:
-            logger.info(
-                "Starting Google auth role=%s intent=%s prompt=%s",
-                role,
-                intent,
-                prompt,
-            )
-            response = await get_google_oauth_url(
-                role,
-                intent,
-                prompt,
-                frontend_url=request_frontend_url,
-            )
-            return RedirectResponse(response["url"])
+        if intent not in ("login", "signup"):
+            raise HTTPException(status_code=400, detail="Invalid Google auth intent")
 
-        raise HTTPException(
-            status_code=400,
-            detail="Missing Google auth parameters",
+        if intent == "signup" and role is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Account type is required for Google signup",
+            )
+
+        requested_role = role if intent == "signup" else None
+        logger.info(
+            "Starting Google auth role=%s intent=%s prompt=%s",
+            requested_role,
+            intent,
+            prompt,
         )
+        response = await get_google_oauth_url(
+            requested_role,
+            intent,
+            prompt,
+            frontend_url=request_frontend_url,
+        )
+        return RedirectResponse(response["url"])
 
     except HTTPException:
         logger.exception("Google auth request failed with HTTPException")
