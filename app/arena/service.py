@@ -1265,7 +1265,7 @@ def _storage_path_from_public_url(image_url: str):
 
 
 def _arena_public_url(arena_id: str):
-    return f"{settings.FRONTEND_URL.rstrip('/')}/app/arena/{arena_id}"
+    return f"{settings.FRONTEND_URL.rstrip('/')}/explore/arena/{arena_id}"
 
 
 def _ensure_owner_turf(context: AuthContext, owner_id: str, arena_id: str, turf_id: str):
