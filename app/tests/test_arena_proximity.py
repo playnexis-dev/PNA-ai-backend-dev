@@ -50,6 +50,45 @@ class ArenaProximityTests(unittest.TestCase):
         self.assertGreater(distance, 0.1)
         self.assertLess(distance, 0.2)
 
+    def test_nearest_active_turf_drives_arena_distance(self):
+        ranked = rank_arenas_by_location(
+            [{
+                "id": "arena",
+                "name": "Arena",
+                "city": "Bhopal",
+                "turfs": [
+                    {"id": "far", "city": "Bhopal", "latitude": 23.35, "longitude": 77.50, "status": "active"},
+                    {"id": "near", "city": "Bhopal", "latitude": 23.26, "longitude": 77.41, "status": "active"},
+                ],
+            }],
+            city="Bhopal",
+            latitude=23.2599,
+            longitude=77.4126,
+        )
+
+        self.assertEqual(ranked[0]["nearest_turf_id"], "near")
+        self.assertEqual(ranked[0]["latitude"], 23.26)
+        self.assertLess(ranked[0]["distance_km"], 1)
+
+    def test_legacy_arena_coordinates_are_used_until_turf_is_located(self):
+        ranked = rank_arenas_by_location(
+            [{
+                "id": "legacy",
+                "name": "Legacy",
+                "city": "Mumbai",
+                "latitude": 19.11,
+                "longitude": 72.87,
+                "turfs": [{"id": "missing", "city": "Mumbai", "status": "active"}],
+            }],
+            city="Mumbai",
+            latitude=19.10,
+            longitude=72.86,
+        )
+
+        self.assertEqual(len(ranked), 1)
+        self.assertFalse(ranked[0]["location_incomplete"])
+        self.assertIsNone(ranked[0]["nearest_turf_id"])
+
 
 if __name__ == "__main__":
     unittest.main()
