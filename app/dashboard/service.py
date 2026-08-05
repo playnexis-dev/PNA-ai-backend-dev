@@ -2,13 +2,21 @@ from collections import Counter, defaultdict
 
 from app.core.auth_context import AuthContext, require_role
 from app.core.supabase import get_supabase_client
+from app.arena.service import list_active_arenas
 
 
 def _client(context: AuthContext):
     return get_supabase_client(context.access_token)
 
 
-def get_player_dashboard(context: AuthContext):
+def get_player_dashboard(
+    context: AuthContext,
+    *,
+    city: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    radius_km: float = 50,
+):
     player = require_role(context, "player")
     client = _client(context)
 
@@ -32,18 +40,12 @@ def get_player_dashboard(context: AuthContext):
         .data
         or []
     )
-    recommended_arenas = (
-        get_supabase_client()
-        .table("arenas")
-        .select("*, turfs(*)")
-        .eq("is_active", True)
-        .eq("status", "active")
-        .order("rating", desc=True)
-        .limit(6)
-        .execute()
-        .data
-        or []
-    )
+    recommended_arenas = list_active_arenas(
+        city=city,
+        latitude=latitude,
+        longitude=longitude,
+        radius_km=radius_km,
+    )[:6]
 
     total_spent = sum(float(item.get("total_amount") or 0) for item in bookings)
     upcoming = [

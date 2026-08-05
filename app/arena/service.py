@@ -10,12 +10,16 @@ from app.arena.schemas import (
     ArenaUpdate,
     MaintenanceCancel,
     MaintenanceCreate,
+    RecurringSlotStatusChange,
+    RecurringSlotStatusUpdate,
+    RecurringSlotStatusesUpdate,
     SlotCopy,
     SlotCreate,
     SlotUpdate,
     TurfCreate,
     TurfUpdate,
 )
+from app.arena.proximity import rank_arenas_by_location
 from app.core.auth_context import AuthContext, require_role
 from app.core.config import settings
 from app.core.supabase import get_supabase_admin_client, get_supabase_client
@@ -32,6 +36,8 @@ ARENA_DETAIL_METADATA_FIELDS = (
     "cancellation_policy",
     "booking_advance_percent",
 )
+
+MEDIA_CACHE_CONTROL_SECONDS = "31536000"
 
 
 def _client(context: AuthContext):
@@ -95,9 +101,10 @@ def _move_turf_details_to_metadata(data: dict, existing_metadata: dict | None = 
         if field in data:
             metadata[field] = data.pop(field)
     if metadata.get("sports"):
-        metadata["sports"] = _unique_strings(metadata["sports"])
-        data["sport"] = metadata["sports"][0]
-    elif data.get("sport"):
+        metadata["sports"] = _normalize_turf_sports(metadata["sports"])
+        if metadata["sports"]:
+            data["sport"] = metadata["sports"][0]
+    elif data.get("sport") and not _is_generic_sport(data["sport"]):
         metadata["sports"] = [data["sport"]]
     data["metadata"] = metadata
     return data
@@ -113,6 +120,15 @@ def _unique_strings(values):
             seen.add(key)
             unique.append(text)
     return unique
+
+
+def _is_generic_sport(value) -> bool:
+    normalized = str(value or "").strip().lower().replace("-", "").replace(" ", "")
+    return normalized == "multisport"
+
+
+def _normalize_turf_sports(values):
+    return [value for value in _unique_strings(values) if not _is_generic_sport(value)]
 
 
 def _sanitize_public_arena(arena: dict):
@@ -135,6 +151,9 @@ def _sanitize_public_arena(arena: dict):
 def list_active_arenas(
     city: str | None = None,
     sport: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    radius_km: float = 50,
 ):
     client = get_supabase_client()
     query = (
@@ -142,16 +161,33 @@ def list_active_arenas(
         .select("*, arena_slots(*), turfs(*)")
         .eq("is_active", True)
         .eq("status", "active")
-        .order("rating", desc=True)
     )
 
-    if city:
-        query = query.ilike("city", f"%{city}%")
-
+    arenas = query.execute().data or []
     if sport:
-        query = query.ilike("sport", f"%{sport}%")
+        sport_key = sport.strip().casefold()
+        arenas = [arena for arena in arenas if _arena_supports_sport(arena, sport_key)]
 
-    return [_sanitize_public_arena(arena) for arena in (query.execute().data or [])]
+    ranked = rank_arenas_by_location(
+        arenas,
+        city=city,
+        latitude=latitude,
+        longitude=longitude,
+        radius_km=radius_km,
+    )
+    return [_sanitize_public_arena(arena) for arena in ranked]
+
+
+def _arena_supports_sport(arena: dict, sport_key: str) -> bool:
+    if not sport_key:
+        return True
+    if sport_key in str(arena.get("sport") or "").casefold():
+        return True
+    for turf in arena.get("turfs") or []:
+        sports = (turf.get("metadata") or {}).get("sports") or [turf.get("sport")]
+        if any(sport_key == str(item or "").strip().casefold() for item in sports):
+            return True
+    return False
 
 
 def get_arena_detail(arena_id: str):
@@ -206,9 +242,15 @@ def get_owner_arena_detail(context: AuthContext, arena_id: str):
     }
 
 
-def list_owner_slots(context: AuthContext, arena_id: str, slot_date: date | None = None):
+def list_owner_slots(
+    context: AuthContext,
+    arena_id: str,
+    slot_date: date | None = None,
+    turf_id: str | None = None,
+):
     owner = require_role(context, "owner")
     _ensure_owner_arena(context, owner["id"], arena_id)
+    _ensure_full_day_slots_for_turfs(arena_id, turf_id=turf_id)
     if not slot_date or date.today() <= slot_date <= date.today() + timedelta(days=6):
         _ensure_rolling_week_slots(arena_id)
 
@@ -223,6 +265,8 @@ def list_owner_slots(context: AuthContext, arena_id: str, slot_date: date | None
 
     if slot_date:
         query = query.eq("slot_date", slot_date.isoformat())
+    if turf_id:
+        query = query.eq("turf_id", turf_id)
 
     return query.execute().data or []
 
@@ -351,7 +395,11 @@ def upload_payment_qr(
         admin_client.storage.from_(settings.ARENA_MEDIA_BUCKET).upload(
             object_path,
             content,
-            file_options={"content-type": content_type, "upsert": "false"},
+            file_options={
+                "content-type": content_type,
+                "cache-control": MEDIA_CACHE_CONTROL_SECONDS,
+                "upsert": "false",
+            },
         )
         public_url = admin_client.storage.from_(settings.ARENA_MEDIA_BUCKET).get_public_url(object_path)
     except Exception as exc:
@@ -414,6 +462,7 @@ def upload_arena_media(
             content,
             file_options={
                 "content-type": content_type,
+                "cache-control": MEDIA_CACHE_CONTROL_SECONDS,
                 "upsert": "false",
             },
         )
@@ -635,7 +684,7 @@ def create_turf(context: AuthContext, arena_id: str, payload: TurfCreate):
     if matching_turf:
         existing_metadata = dict(matching_turf.get("metadata") or {})
         incoming_metadata = dict(data.get("metadata") or {})
-        merged_sports = _unique_strings([
+        merged_sports = _normalize_turf_sports([
             *(existing_metadata.get("sports") or [matching_turf.get("sport")]),
             *(incoming_metadata.get("sports") or [data.get("sport")]),
         ])
@@ -660,7 +709,9 @@ def create_turf(context: AuthContext, arena_id: str, payload: TurfCreate):
             raise HTTPException(status_code=400, detail=exc.message) from exc
         if not response.data:
             raise HTTPException(status_code=500, detail="Failed to update existing turf")
-        return response.data[0]
+        updated_turf = response.data[0]
+        _ensure_full_day_slots_for_turf(arena_id, updated_turf)
+        return updated_turf
 
     try:
         response = _client(context).table("turfs").insert(data).execute()
@@ -668,7 +719,9 @@ def create_turf(context: AuthContext, arena_id: str, payload: TurfCreate):
         raise HTTPException(status_code=400, detail=exc.message) from exc
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to create turf")
-    return response.data[0]
+    created_turf = response.data[0]
+    _ensure_full_day_slots_for_turf(arena_id, created_turf)
+    return created_turf
 
 
 def update_turf(context: AuthContext, arena_id: str, turf_id: str, payload: TurfUpdate):
@@ -694,7 +747,9 @@ def update_turf(context: AuthContext, arena_id: str, turf_id: str, payload: Turf
         raise HTTPException(status_code=400, detail=exc.message) from exc
     if not response.data:
         raise HTTPException(status_code=404, detail="Turf not found")
-    return response.data[0]
+    updated_turf = response.data[0]
+    _ensure_full_day_slots_for_turf(arena_id, updated_turf)
+    return updated_turf
 
 
 def upload_turf_media(
@@ -735,7 +790,11 @@ def upload_turf_media(
         admin_client.storage.from_(settings.ARENA_MEDIA_BUCKET).upload(
             object_path,
             content,
-            file_options={"content-type": content_type, "upsert": "false"},
+            file_options={
+                "content-type": content_type,
+                "cache-control": MEDIA_CACHE_CONTROL_SECONDS,
+                "upsert": "false",
+            },
         )
         public_url = admin_client.storage.from_(settings.ARENA_MEDIA_BUCKET).get_public_url(object_path)
     except Exception as exc:
@@ -971,7 +1030,8 @@ def list_available_slots(
         if not turf_response or not turf_response.data:
             return []
 
-    if slot_date and date.today() <= slot_date <= date.today() + timedelta(days=6):
+    if not slot_date or date.today() <= slot_date <= date.today() + timedelta(days=6):
+        _ensure_full_day_slots_for_turfs(arena_id, turf_id=turf_id, active_only=True)
         _ensure_rolling_week_slots(arena_id)
 
     query = (
@@ -992,12 +1052,205 @@ def list_available_slots(
     slots = query.execute().data or []
     available = []
     for slot in slots:
+        slot_day = date.fromisoformat(str(slot.get("slot_date")))
+        slot_start = time.fromisoformat(str(slot.get("start_time"))[:8])
+        if datetime.combine(slot_day, slot_start) <= datetime.now():
+            continue
         if int(slot.get("booked_count") or 0) >= int(slot.get("capacity") or 1):
             continue
         if _slot_overlaps_maintenance(arena_id, slot):
             continue
         available.append(slot)
     return available
+
+
+def _full_day_slot_windows(slot_window_minutes: int):
+    duration = max(1, min(int(slot_window_minutes or 60), 24 * 60))
+    windows = []
+    start_minutes = 0
+    while start_minutes < 24 * 60:
+        end_minutes = min(start_minutes + duration, 24 * 60)
+        start_text = f"{start_minutes // 60:02d}:{start_minutes % 60:02d}:00"
+        end_text = (
+            "23:59:59"
+            if end_minutes == 24 * 60
+            else f"{end_minutes // 60:02d}:{end_minutes % 60:02d}:00"
+        )
+        display_end = "24:00" if end_minutes == 24 * 60 else end_text[:5]
+        windows.append((start_text, end_text, f"{start_text[:5]}-{display_end}"))
+        start_minutes = end_minutes
+    return windows
+
+
+def _slot_price_for_date(turf: dict, slot_date: date) -> float:
+    metadata = dict(turf.get("metadata") or {})
+    price = float(turf.get("price_per_slot") or 0)
+    weekday = slot_date.strftime("%a").casefold()
+    peak_days = {str(value).strip().casefold() for value in metadata.get("peak_days") or []}
+    discount_days = {str(value).strip().casefold() for value in metadata.get("discount_days") or []}
+    if weekday in peak_days:
+        price += float(metadata.get("peak_surcharge") or 0)
+    if weekday in discount_days:
+        price -= float(metadata.get("discount_amount") or 0)
+    return max(price, 0)
+
+
+def _ensure_full_day_slots_for_turfs(
+    arena_id: str,
+    turf_id: str | None = None,
+    active_only: bool = False,
+):
+    query = get_supabase_admin_client().table("turfs").select("*").eq("arena_id", arena_id)
+    if turf_id:
+        query = query.eq("id", turf_id)
+    if active_only:
+        query = query.eq("is_active", True).eq("status", "active")
+    for turf in query.execute().data or []:
+        _ensure_full_day_slots_for_turf(arena_id, turf)
+
+
+def _ensure_full_day_slots_for_turf(arena_id: str, turf: dict):
+    turf_id = turf.get("id")
+    if not turf_id:
+        return []
+
+    metadata = dict(turf.get("metadata") or {})
+    duration = int(metadata.get("slot_window_minutes") or 60)
+    windows = _full_day_slot_windows(duration)
+    disabled_times = {str(value) for value in metadata.get("disabled_slot_times") or []}
+    week_dates = [date.today() + timedelta(days=offset) for offset in range(7)]
+    week_date_strings = [item.isoformat() for item in week_dates]
+    client = get_supabase_admin_client()
+    existing = (
+        client.table("arena_slots")
+        .select("id,slot_date,start_time,end_time,booked_count,status,metadata")
+        .eq("arena_id", arena_id)
+        .eq("turf_id", turf_id)
+        .in_("slot_date", week_date_strings)
+        .execute()
+        .data
+        or []
+    )
+    desired_times = {(start_time, end_time) for start_time, end_time, _ in windows}
+    stale_ids = [
+        item["id"]
+        for item in existing
+        if (item.get("metadata") or {}).get("auto_generated")
+        and (str(item.get("start_time"))[:8], str(item.get("end_time"))[:8]) not in desired_times
+        and int(item.get("booked_count") or 0) == 0
+        and item.get("status") != "booked"
+    ]
+    if stale_ids:
+        client.table("arena_slots").delete().in_("id", stale_ids).execute()
+        stale_id_set = set(stale_ids)
+        existing = [item for item in existing if item.get("id") not in stale_id_set]
+    existing_keys = {
+        (
+            str(item.get("slot_date")),
+            str(item.get("start_time"))[:8],
+            str(item.get("end_time"))[:8],
+        )
+        for item in existing
+    }
+
+    rows = []
+    for target_date in week_dates:
+        for start_time, end_time, rule_key in windows:
+            key = (target_date.isoformat(), start_time, end_time)
+            if key in existing_keys:
+                continue
+            rows.append({
+                "arena_id": arena_id,
+                "turf_id": turf_id,
+                "slot_date": target_date.isoformat(),
+                "start_time": start_time,
+                "end_time": end_time,
+                "price": _slot_price_for_date(turf, target_date),
+                "capacity": max(int(turf.get("capacity") or 1), 1),
+                "booked_count": 0,
+                "status": "blocked" if rule_key in disabled_times else "active",
+                "metadata": {
+                    "auto_generated": True,
+                    "slot_window_minutes": duration,
+                },
+            })
+
+    if not rows:
+        return []
+    try:
+        return client.table("arena_slots").insert(rows).execute().data or []
+    except APIError:
+        # A concurrent request may have generated the same unique slots first.
+        return []
+
+
+def _set_recurring_slot_statuses(
+    context: AuthContext,
+    arena_id: str,
+    turf_id: str,
+    changes: list[RecurringSlotStatusChange],
+):
+    owner = require_role(context, "owner")
+    _ensure_owner_arena(context, owner["id"], arena_id)
+    turf = _ensure_owner_turf(context, owner["id"], arena_id, turf_id)
+    metadata = dict(turf.get("metadata") or {})
+    disabled_times = {str(value) for value in metadata.get("disabled_slot_times") or []}
+
+    normalized_changes: dict[tuple[time, time], str] = {}
+    for change in changes:
+        if change.end_time <= change.start_time and change.end_time != time(23, 59, 59):
+            raise HTTPException(status_code=400, detail="Slot end time must be after its start time")
+        display_end = "24:00" if change.end_time == time(23, 59, 59) else change.end_time.strftime("%H:%M")
+        rule_key = f"{change.start_time.strftime('%H:%M')}-{display_end}"
+        normalized_changes[(change.start_time, change.end_time)] = change.status
+        if change.status == "blocked":
+            disabled_times.add(rule_key)
+        else:
+            disabled_times.discard(rule_key)
+
+    metadata["disabled_slot_times"] = sorted(disabled_times)
+    client = _client(context)
+    client.table("turfs").update({"metadata": metadata}).eq("id", turf_id).execute()
+
+    updated_turf = {**turf, "metadata": metadata}
+    _ensure_full_day_slots_for_turf(arena_id, updated_turf)
+    week_dates = [(date.today() + timedelta(days=offset)).isoformat() for offset in range(7)]
+    updated_slots = []
+    for (start_time, end_time), status in normalized_changes.items():
+        response = (
+            client.table("arena_slots")
+            .update({"status": status})
+            .eq("arena_id", arena_id)
+            .eq("turf_id", turf_id)
+            .eq("start_time", start_time.isoformat())
+            .eq("end_time", end_time.isoformat())
+            .in_("slot_date", week_dates)
+            .neq("status", "booked")
+            .execute()
+        )
+        updated_slots.extend(response.data or [])
+    return updated_slots
+
+
+def set_recurring_slot_status(
+    context: AuthContext,
+    arena_id: str,
+    payload: RecurringSlotStatusUpdate,
+):
+    change = RecurringSlotStatusChange(
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        status=payload.status,
+    )
+    return _set_recurring_slot_statuses(context, arena_id, payload.turf_id, [change])
+
+
+def set_recurring_slot_statuses(
+    context: AuthContext,
+    arena_id: str,
+    payload: RecurringSlotStatusesUpdate,
+):
+    return _set_recurring_slot_statuses(context, arena_id, payload.turf_id, payload.slots)
 
 
 def create_slot(context: AuthContext, arena_id: str, payload: SlotCreate):

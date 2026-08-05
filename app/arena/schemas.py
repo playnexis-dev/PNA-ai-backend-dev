@@ -1,7 +1,7 @@
 from datetime import date, datetime, time
-from typing import Any
+from typing import Any, Self
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 
 class ArenaBase(BaseModel):
@@ -14,8 +14,8 @@ class ArenaBase(BaseModel):
     city: str = Field(min_length=1, max_length=50)
     state: str | None = None
     country: str = "India"
-    latitude: float | None = None
-    longitude: float | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
     base_price: float = Field(default=0, ge=0)
     price_unit: str = "slot"
     amenities: list[str] = Field(min_length=1)
@@ -29,6 +29,12 @@ class ArenaBase(BaseModel):
     facebook: str | None = Field(default=None, max_length=255)
     cancellation_policy: str = Field(min_length=1, max_length=3000)
     booking_advance_percent: float = Field(gt=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_coordinate_pair(self) -> Self:
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must be provided together")
+        return self
 
 
 class ArenaCreate(ArenaBase):
@@ -46,8 +52,8 @@ class ArenaUpdate(BaseModel):
     city: str | None = Field(default=None, min_length=1, max_length=50)
     state: str | None = None
     country: str | None = None
-    latitude: float | None = None
-    longitude: float | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
     base_price: float | None = Field(default=None, ge=0)
     price_unit: str | None = None
     status: str | None = Field(default=None, pattern="^(active|inactive)$")
@@ -64,6 +70,12 @@ class ArenaUpdate(BaseModel):
     facebook: str | None = Field(default=None, max_length=255)
     cancellation_policy: str | None = Field(default=None, min_length=1, max_length=3000)
     booking_advance_percent: float | None = Field(default=None, gt=0, le=100)
+
+    @model_validator(mode="after")
+    def validate_coordinate_pair(self) -> Self:
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must be provided together")
+        return self
 
 
 class SlotCreate(BaseModel):
@@ -92,6 +104,24 @@ class SlotCopy(BaseModel):
     source_date: date
     target_date: date
     turf_id: str | None = None
+
+
+class RecurringSlotStatusUpdate(BaseModel):
+    turf_id: str
+    start_time: time
+    end_time: time
+    status: str = Field(pattern="^(active|blocked)$")
+
+
+class RecurringSlotStatusChange(BaseModel):
+    start_time: time
+    end_time: time
+    status: str = Field(pattern="^(active|blocked)$")
+
+
+class RecurringSlotStatusesUpdate(BaseModel):
+    turf_id: str
+    slots: list[RecurringSlotStatusChange] = Field(min_length=1, max_length=96)
 
 
 class ArenaImageDelete(BaseModel):
@@ -128,6 +158,12 @@ class TurfCreate(BaseModel):
     close_time: time
     size: str = Field(min_length=1, max_length=100)
     flooring: str = Field(min_length=1, max_length=100)
+    address: str = Field(min_length=1, max_length=300)
+    city: str = Field(min_length=1, max_length=50)
+    state: str | None = Field(default=None, max_length=100)
+    country: str = Field(default="India", min_length=1, max_length=100)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
     used_for_more_sports: bool = False
     capacity: int = Field(default=1, gt=0)
     status: str = Field(default="active", pattern="^(active|inactive)$")
@@ -156,11 +192,23 @@ class TurfUpdate(BaseModel):
     close_time: time | None = None
     size: str | None = Field(default=None, min_length=1, max_length=100)
     flooring: str | None = Field(default=None, min_length=1, max_length=100)
+    address: str | None = Field(default=None, min_length=1, max_length=300)
+    city: str | None = Field(default=None, min_length=1, max_length=50)
+    state: str | None = Field(default=None, max_length=100)
+    country: str | None = Field(default=None, min_length=1, max_length=100)
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
     used_for_more_sports: bool | None = None
     capacity: int | None = Field(default=None, gt=0)
     status: str | None = Field(default=None, pattern="^(active|inactive)$")
     media: list[str] | None = None
     metadata: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def validate_coordinate_pair(self) -> Self:
+        if (self.latitude is None) != (self.longitude is None):
+            raise ValueError("Latitude and longitude must be provided together")
+        return self
 
 
 class MaintenanceCreate(BaseModel):

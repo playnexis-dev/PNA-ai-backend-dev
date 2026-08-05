@@ -9,6 +9,8 @@ from app.arena.schemas import (
     ArenaImagesReorder,
     MaintenanceCancel,
     MaintenanceCreate,
+    RecurringSlotStatusUpdate,
+    RecurringSlotStatusesUpdate,
     SlotCopy,
     ArenaUpdate,
     SlotCreate,
@@ -40,6 +42,8 @@ from app.arena.service import (
     remove_arena_image,
     remove_turf_media,
     reorder_arena_images,
+    set_recurring_slot_status,
+    set_recurring_slot_statuses,
     set_arena_active,
     set_arena_booking_enabled,
     set_turf_active,
@@ -60,8 +64,19 @@ router = APIRouter(prefix="/arenas", tags=["Arenas"])
 async def public_arenas(
     city: str | None = Query(default=None),
     sport: str | None = Query(default=None),
+    latitude: float | None = Query(default=None, ge=-90, le=90),
+    longitude: float | None = Query(default=None, ge=-180, le=180),
+    radius_km: float = Query(default=50, ge=1, le=50),
 ):
-    return list_active_arenas(city=city, sport=sport)
+    if (latitude is None) != (longitude is None):
+        raise HTTPException(status_code=422, detail="Latitude and longitude must be provided together")
+    return list_active_arenas(
+        city=city,
+        sport=sport,
+        latitude=latitude,
+        longitude=longitude,
+        radius_km=radius_km,
+    )
 
 
 @router.get("/owner")
@@ -277,9 +292,10 @@ async def owner_cancel_maintenance_window(
 async def owner_arena_slots(
     arena_id: str,
     slot_date: date | None = Query(default=None),
+    turf_id: str | None = Query(default=None),
     context: AuthContext = Depends(get_current_auth_context),
 ):
-    return list_owner_slots(context, arena_id, slot_date)
+    return list_owner_slots(context, arena_id, slot_date, turf_id)
 
 
 @router.post("/{arena_id}/images")
@@ -386,6 +402,24 @@ async def owner_copy_slots(
     context: AuthContext = Depends(get_current_auth_context),
 ):
     return copy_slots_to_date(context, arena_id, payload)
+
+
+@router.patch("/{arena_id}/slots/recurring-status")
+async def owner_set_recurring_slot_status(
+    arena_id: str,
+    payload: RecurringSlotStatusUpdate,
+    context: AuthContext = Depends(get_current_auth_context),
+):
+    return set_recurring_slot_status(context, arena_id, payload)
+
+
+@router.put("/{arena_id}/slots/recurring-statuses")
+async def owner_set_recurring_slot_statuses(
+    arena_id: str,
+    payload: RecurringSlotStatusesUpdate,
+    context: AuthContext = Depends(get_current_auth_context),
+):
+    return set_recurring_slot_statuses(context, arena_id, payload)
 
 
 @router.patch("/{arena_id}/slots/{slot_id}")
