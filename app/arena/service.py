@@ -96,9 +96,10 @@ def _move_turf_details_to_metadata(data: dict, existing_metadata: dict | None = 
         if field in data:
             metadata[field] = data.pop(field)
     if metadata.get("sports"):
-        metadata["sports"] = _unique_strings(metadata["sports"])
-        data["sport"] = metadata["sports"][0]
-    elif data.get("sport"):
+        metadata["sports"] = _normalize_turf_sports(metadata["sports"])
+        if metadata["sports"]:
+            data["sport"] = metadata["sports"][0]
+    elif data.get("sport") and not _is_generic_sport(data["sport"]):
         metadata["sports"] = [data["sport"]]
     data["metadata"] = metadata
     return data
@@ -114,6 +115,15 @@ def _unique_strings(values):
             seen.add(key)
             unique.append(text)
     return unique
+
+
+def _is_generic_sport(value) -> bool:
+    normalized = str(value or "").strip().lower().replace("-", "").replace(" ", "")
+    return normalized == "multisport"
+
+
+def _normalize_turf_sports(values):
+    return [value for value in _unique_strings(values) if not _is_generic_sport(value)]
 
 
 def _sanitize_public_arena(arena: dict):
@@ -656,7 +666,7 @@ def create_turf(context: AuthContext, arena_id: str, payload: TurfCreate):
     if matching_turf:
         existing_metadata = dict(matching_turf.get("metadata") or {})
         incoming_metadata = dict(data.get("metadata") or {})
-        merged_sports = _unique_strings([
+        merged_sports = _normalize_turf_sports([
             *(existing_metadata.get("sports") or [matching_turf.get("sport")]),
             *(incoming_metadata.get("sports") or [data.get("sport")]),
         ])
