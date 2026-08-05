@@ -10,7 +10,9 @@ from app.arena.schemas import (
     ArenaUpdate,
     MaintenanceCancel,
     MaintenanceCreate,
+    RecurringSlotStatusChange,
     RecurringSlotStatusUpdate,
+    RecurringSlotStatusesUpdate,
     SlotCopy,
     SlotCreate,
     SlotUpdate,
@@ -34,6 +36,8 @@ ARENA_DETAIL_METADATA_FIELDS = (
     "cancellation_policy",
     "booking_advance_percent",
 )
+
+MEDIA_CACHE_CONTROL_SECONDS = "31536000"
 
 
 def _client(context: AuthContext):
@@ -391,7 +395,11 @@ def upload_payment_qr(
         admin_client.storage.from_(settings.ARENA_MEDIA_BUCKET).upload(
             object_path,
             content,
-            file_options={"content-type": content_type, "upsert": "false"},
+            file_options={
+                "content-type": content_type,
+                "cache-control": MEDIA_CACHE_CONTROL_SECONDS,
+                "upsert": "false",
+            },
         )
         public_url = admin_client.storage.from_(settings.ARENA_MEDIA_BUCKET).get_public_url(object_path)
     except Exception as exc:
@@ -454,6 +462,7 @@ def upload_arena_media(
             content,
             file_options={
                 "content-type": content_type,
+                "cache-control": MEDIA_CACHE_CONTROL_SECONDS,
                 "upsert": "false",
             },
         )
@@ -781,7 +790,11 @@ def upload_turf_media(
         admin_client.storage.from_(settings.ARENA_MEDIA_BUCKET).upload(
             object_path,
             content,
-            file_options={"content-type": content_type, "upsert": "false"},
+            file_options={
+                "content-type": content_type,
+                "cache-control": MEDIA_CACHE_CONTROL_SECONDS,
+                "upsert": "false",
+            },
         )
         public_url = admin_client.storage.from_(settings.ARENA_MEDIA_BUCKET).get_public_url(object_path)
     except Exception as exc:
@@ -1171,41 +1184,73 @@ def _ensure_full_day_slots_for_turf(arena_id: str, turf: dict):
         return []
 
 
+def _set_recurring_slot_statuses(
+    context: AuthContext,
+    arena_id: str,
+    turf_id: str,
+    changes: list[RecurringSlotStatusChange],
+):
+    owner = require_role(context, "owner")
+    _ensure_owner_arena(context, owner["id"], arena_id)
+    turf = _ensure_owner_turf(context, owner["id"], arena_id, turf_id)
+    metadata = dict(turf.get("metadata") or {})
+    disabled_times = {str(value) for value in metadata.get("disabled_slot_times") or []}
+
+    normalized_changes: dict[tuple[time, time], str] = {}
+    for change in changes:
+        if change.end_time <= change.start_time and change.end_time != time(23, 59, 59):
+            raise HTTPException(status_code=400, detail="Slot end time must be after its start time")
+        display_end = "24:00" if change.end_time == time(23, 59, 59) else change.end_time.strftime("%H:%M")
+        rule_key = f"{change.start_time.strftime('%H:%M')}-{display_end}"
+        normalized_changes[(change.start_time, change.end_time)] = change.status
+        if change.status == "blocked":
+            disabled_times.add(rule_key)
+        else:
+            disabled_times.discard(rule_key)
+
+    metadata["disabled_slot_times"] = sorted(disabled_times)
+    client = _client(context)
+    client.table("turfs").update({"metadata": metadata}).eq("id", turf_id).execute()
+
+    updated_turf = {**turf, "metadata": metadata}
+    _ensure_full_day_slots_for_turf(arena_id, updated_turf)
+    week_dates = [(date.today() + timedelta(days=offset)).isoformat() for offset in range(7)]
+    updated_slots = []
+    for (start_time, end_time), status in normalized_changes.items():
+        response = (
+            client.table("arena_slots")
+            .update({"status": status})
+            .eq("arena_id", arena_id)
+            .eq("turf_id", turf_id)
+            .eq("start_time", start_time.isoformat())
+            .eq("end_time", end_time.isoformat())
+            .in_("slot_date", week_dates)
+            .neq("status", "booked")
+            .execute()
+        )
+        updated_slots.extend(response.data or [])
+    return updated_slots
+
+
 def set_recurring_slot_status(
     context: AuthContext,
     arena_id: str,
     payload: RecurringSlotStatusUpdate,
 ):
-    owner = require_role(context, "owner")
-    _ensure_owner_arena(context, owner["id"], arena_id)
-    turf = _ensure_owner_turf(context, owner["id"], arena_id, payload.turf_id)
-    metadata = dict(turf.get("metadata") or {})
-    display_end = "24:00" if payload.end_time == time(23, 59, 59) else payload.end_time.strftime("%H:%M")
-    rule_key = f"{payload.start_time.strftime('%H:%M')}-{display_end}"
-    disabled_times = {str(value) for value in metadata.get("disabled_slot_times") or []}
-    if payload.status == "blocked":
-        disabled_times.add(rule_key)
-    else:
-        disabled_times.discard(rule_key)
-    metadata["disabled_slot_times"] = sorted(disabled_times)
-    _client(context).table("turfs").update({"metadata": metadata}).eq("id", payload.turf_id).execute()
-
-    updated_turf = {**turf, "metadata": metadata}
-    _ensure_full_day_slots_for_turf(arena_id, updated_turf)
-    week_dates = [(date.today() + timedelta(days=offset)).isoformat() for offset in range(7)]
-    response = (
-        _client(context)
-        .table("arena_slots")
-        .update({"status": payload.status})
-        .eq("arena_id", arena_id)
-        .eq("turf_id", payload.turf_id)
-        .eq("start_time", payload.start_time.isoformat())
-        .eq("end_time", payload.end_time.isoformat())
-        .in_("slot_date", week_dates)
-        .neq("status", "booked")
-        .execute()
+    change = RecurringSlotStatusChange(
+        start_time=payload.start_time,
+        end_time=payload.end_time,
+        status=payload.status,
     )
-    return response.data or []
+    return _set_recurring_slot_statuses(context, arena_id, payload.turf_id, [change])
+
+
+def set_recurring_slot_statuses(
+    context: AuthContext,
+    arena_id: str,
+    payload: RecurringSlotStatusesUpdate,
+):
+    return _set_recurring_slot_statuses(context, arena_id, payload.turf_id, payload.slots)
 
 
 def create_slot(context: AuthContext, arena_id: str, payload: SlotCreate):

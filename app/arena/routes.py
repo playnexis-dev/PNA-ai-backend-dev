@@ -10,6 +10,7 @@ from app.arena.schemas import (
     MaintenanceCancel,
     MaintenanceCreate,
     RecurringSlotStatusUpdate,
+    RecurringSlotStatusesUpdate,
     SlotCopy,
     ArenaUpdate,
     SlotCreate,
@@ -42,6 +43,7 @@ from app.arena.service import (
     remove_turf_media,
     reorder_arena_images,
     set_recurring_slot_status,
+    set_recurring_slot_statuses,
     set_arena_active,
     set_arena_booking_enabled,
     set_turf_active,
@@ -409,6 +411,15 @@ async def owner_set_recurring_slot_status(
     context: AuthContext = Depends(get_current_auth_context),
 ):
     return set_recurring_slot_status(context, arena_id, payload)
+
+
+@router.put("/{arena_id}/slots/recurring-statuses")
+async def owner_set_recurring_slot_statuses(
+    arena_id: str,
+    payload: RecurringSlotStatusesUpdate,
+    context: AuthContext = Depends(get_current_auth_context),
+):
+    return set_recurring_slot_statuses(context, arena_id, payload)
 
 
 @router.patch("/{arena_id}/slots/{slot_id}")

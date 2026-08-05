@@ -3,6 +3,7 @@ from urllib.parse import urlencode
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import RedirectResponse
 
 from app.owner.routes import router as owner_router
@@ -24,6 +25,8 @@ logging.basicConfig(
 app = FastAPI(
     title="PlayNexis API",
 )
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 app.add_middleware(
     CORSMiddleware,

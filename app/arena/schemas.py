@@ -113,6 +113,17 @@ class RecurringSlotStatusUpdate(BaseModel):
     status: str = Field(pattern="^(active|blocked)$")
 
 
+class RecurringSlotStatusChange(BaseModel):
+    start_time: time
+    end_time: time
+    status: str = Field(pattern="^(active|blocked)$")
+
+
+class RecurringSlotStatusesUpdate(BaseModel):
+    turf_id: str
+    slots: list[RecurringSlotStatusChange] = Field(min_length=1, max_length=96)
+
+
 class ArenaImageDelete(BaseModel):
     image_url: str | None = Field(default=None, min_length=1)
     media_url: str | None = Field(default=None, min_length=1)
