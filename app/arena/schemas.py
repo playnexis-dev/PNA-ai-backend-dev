@@ -106,6 +106,13 @@ class SlotCopy(BaseModel):
     turf_id: str | None = None
 
 
+class RecurringSlotStatusUpdate(BaseModel):
+    turf_id: str
+    start_time: time
+    end_time: time
+    status: str = Field(pattern="^(active|blocked)$")
+
+
 class ArenaImageDelete(BaseModel):
     image_url: str | None = Field(default=None, min_length=1)
     media_url: str | None = Field(default=None, min_length=1)
