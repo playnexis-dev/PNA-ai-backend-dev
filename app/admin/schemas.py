@@ -32,3 +32,4 @@ class AdminArenaCreateRequest(BaseModel):
 
 class ArenaManagementUpdate(BaseModel):
     management_mode: ManagementMode
+    owner_id: str | None = Field(default=None, min_length=1)

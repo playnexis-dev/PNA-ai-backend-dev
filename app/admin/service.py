@@ -263,10 +263,29 @@ def owner_scoped_context_for_owner(context: AuthContext, owner_id: str) -> AuthC
     return AuthContext(context.access_token, context.user, "owner", owner)
 
 
-def set_arena_management(context: AuthContext, arena_id: str, management_mode: str):
+def set_arena_management(
+    context: AuthContext,
+    arena_id: str,
+    management_mode: str,
+    owner_id: str | None = None,
+):
     before = get_arena_for_admin(context, arena_id)
+    client = get_supabase_client(context.access_token)
+
+    if management_mode == "owner" and owner_id:
+        owner = client.table("owners").select("id").eq("id", owner_id).maybe_single().execute().data
+        if not owner:
+            raise HTTPException(status_code=404, detail="Owner not found")
+        client.rpc(
+            "admin_assign_arena_owner",
+            {"p_arena_id": arena_id, "p_owner_id": owner_id},
+        ).execute()
+        updated = get_arena_for_admin(context, arena_id)
+        _audit(context, "arena.owner_assigned", "arena", arena_id, before, updated)
+        return updated
+
     updated = (
-        get_supabase_client(context.access_token).table("arenas")
+        client.table("arenas")
         .update({"management_mode": management_mode})
         .eq("id", arena_id)
         .execute().data

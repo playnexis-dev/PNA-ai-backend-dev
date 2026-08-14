@@ -198,7 +198,7 @@ async def arena_update(arena_id: str, payload: ArenaUpdate, context: AuthContext
 
 @router.patch("/arenas/{arena_id}/management")
 async def arena_management(arena_id: str, payload: ArenaManagementUpdate, context: AuthContext = Depends(get_current_auth_context)):
-    return set_arena_management(context, arena_id, payload.management_mode)
+    return set_arena_management(context, arena_id, payload.management_mode, payload.owner_id)
 
 
 @router.patch("/arenas/{arena_id}/active")
