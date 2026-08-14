@@ -5,7 +5,7 @@ from fastapi import Header, HTTPException
 
 from app.core.supabase import get_supabase_client, supabase
 
-UserRole = Literal["player", "owner"]
+UserRole = Literal["player", "owner", "admin"]
 
 
 @dataclass
@@ -57,10 +57,14 @@ def get_current_auth_context(
         raise HTTPException(status_code=403, detail="User role not found")
 
     role = role_response.data.get("role")
-    if role not in ("player", "owner"):
+    if role not in ("player", "owner", "admin"):
         raise HTTPException(status_code=403, detail="Invalid user role")
 
-    table = "players" if role == "player" else "owners"
+    table = {
+        "player": "players",
+        "owner": "owners",
+        "admin": "admins",
+    }[role]
     profile_response = (
         client.table(table)
         .select("*")
@@ -69,12 +73,24 @@ def get_current_auth_context(
         .execute()
     )
 
+    profile = profile_response.data if profile_response else None
+    if role == "admin" and (not profile or profile.get("status") != "active"):
+        raise HTTPException(status_code=403, detail="Admin account is not active")
+
     return AuthContext(
         access_token=token,
         user=user_response.user,
         role=role,
-        profile=profile_response.data if profile_response else None,
+        profile=profile,
     )
+
+
+def get_optional_auth_context(
+    authorization: str | None = Header(default=None),
+):
+    if not authorization:
+        return None
+    return get_current_auth_context(authorization)
 
 
 def require_role(context: AuthContext, role: UserRole):
@@ -86,5 +102,16 @@ def require_role(context: AuthContext, role: UserRole):
             status_code=403,
             detail=f"{role.title()} profile is incomplete",
         )
+
+    return context.profile
+
+
+def require_any_role(context: AuthContext, *roles: UserRole):
+    if context.role not in roles:
+        allowed = " or ".join(role.title() for role in roles)
+        raise HTTPException(status_code=403, detail=f"{allowed} access required")
+
+    if not context.profile:
+        raise HTTPException(status_code=403, detail="Account profile is incomplete")
 
     return context.profile

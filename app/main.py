@@ -14,6 +14,8 @@ from app.dashboard.routes import router as dashboard_router
 from app.notifications.routes import router as notifications_router
 from app.profile.routes import router as profile_router
 from app.reviews.routes import router as reviews_router
+from app.auth.routes import router as auth_router
+from app.admin.routes import public_router as admin_auth_router, router as admin_router
 from app.core.config import settings
 
 logging.basicConfig(
@@ -21,27 +23,34 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
-
 app = FastAPI(
     title="PlayNexis API",
 )
 
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 
+frontend_url = settings.FRONTEND_URL.rstrip("/")
+
+allowed_origins = [
+    frontend_url,
+    "https://playnexis.vercel.app",
+    "https://YOUR-GODADDY-DOMAIN.com",
+    "https://www.YOUR-GODADDY-DOMAIN.com",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(set(allowed_origins)),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-from app.auth.routes import (
-    router as auth_router,
-)
 app.include_router(owner_router)
 app.include_router(player_router)
 app.include_router(auth_router)
+app.include_router(admin_router)
+app.include_router(admin_auth_router)
 app.include_router(profile_router)
 app.include_router(arena_router)
 app.include_router(booking_router)
@@ -60,7 +69,7 @@ async def root(
         params = urlencode({
             "error": error_description or error_code or error or "Google login failed",
         })
-        return RedirectResponse(f"{settings.FRONTEND_URL}/auth/callback?{params}")
+        return RedirectResponse(f"{frontend_url}/auth/callback?{params}")
 
     return {
         "message": "PlayNexis Backend Running"

@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from postgrest.exceptions import APIError
 from supabase_auth.errors import AuthApiError
 
-from app.auth.schemas import UserRole
+from app.auth.schemas import SignupRole, UserRole
 from app.core.config import settings
 from app.core.supabase import get_supabase_admin_client, get_supabase_client, supabase
 from app.owner.schemas import OwnerRegister
@@ -34,7 +34,7 @@ def _base64_url_encode(value: bytes):
 
 
 def _create_google_oauth_ticket(
-    role: UserRole | None,
+    role: SignupRole | None,
     code_verifier: str,
     intent: str,
     frontend_url: str,
@@ -114,6 +114,12 @@ def _read_google_oauth_ticket(oauth_ticket: str):
         raise HTTPException(
             status_code=400,
             detail="Account type is required for Google signup.",
+        )
+
+    if intent == "signup" and role != "player":
+        raise HTTPException(
+            status_code=403,
+            detail="Public Owner registration is not available.",
         )
 
     return payload
@@ -356,7 +362,7 @@ def _ensure_role_for_user(
         )
         return existing_role
 
-    if existing_role in ("player", "owner") and existing_role != fallback_role:
+    if existing_role in ("player", "owner", "admin") and existing_role != fallback_role:
         raise HTTPException(
             status_code=409,
             detail=(
@@ -400,7 +406,7 @@ def _require_role_for_user(
     access_token: str | None = None,
 ):
     role = _get_role_for_user(user_id, access_token)
-    if role not in ("player", "owner"):
+    if role not in ("player", "owner", "admin"):
         raise HTTPException(status_code=403, detail="Account setup is incomplete")
 
     return role
@@ -484,16 +490,19 @@ async def _create_profile_for_role(
             access_token,
         )
 
-    return await create_owner(
-        OwnerRegister(
-            user_id=user_id,
-            full_name=full_name,
-            email=email,
-            phone=phone,
-            company_name=company_name,
-        ),
-        access_token,
-    )
+    if role == "owner":
+        return await create_owner(
+            OwnerRegister(
+                user_id=user_id,
+                full_name=full_name,
+                email=email,
+                phone=phone,
+                company_name=company_name,
+            ),
+            access_token,
+        )
+
+    raise HTTPException(status_code=403, detail="Admin profiles can only be created by an Admin")
 
 
 async def _ensure_profile_for_role(
@@ -502,7 +511,7 @@ async def _ensure_profile_for_role(
     access_token: str,
 ):
     client = get_supabase_client(access_token)
-    table = "players" if role == "player" else "owners"
+    table = {"player": "players", "owner": "owners", "admin": "admins"}[role]
     try:
         existing_profile = (
             client
@@ -517,6 +526,9 @@ async def _ensure_profile_for_role(
 
     if existing_profile and existing_profile.data:
         return existing_profile.data
+
+    if role == "admin":
+        return None
 
     try:
         return await _create_profile_for_role(
@@ -539,7 +551,7 @@ def _get_profile_for_role(
     access_token: str,
 ):
     client = get_supabase_client(access_token)
-    table = "players" if role == "player" else "owners"
+    table = {"player": "players", "owner": "owners", "admin": "admins"}[role]
     try:
         profile = (
             client
@@ -706,13 +718,28 @@ async def signup_user(
     phone: str | None,
     company_name: str | None,
 ):
+    if role != "player":
+        raise HTTPException(
+            status_code=403,
+            detail="Public Owner registration is not available.",
+        )
+
     clean_phone = _sanitize_phone(phone)
+    email_redirect_to = f"{settings.FRONTEND_URL.rstrip('/')}/auth/login?email_verified=1"
 
     try:
         response = supabase.auth.sign_up(
             {
                 "email": email,
                 "password": password,
+                "options": {
+                    "email_redirect_to": email_redirect_to,
+                    "data": {
+                        "role": "player",
+                        "full_name": full_name,
+                        "phone": clean_phone,
+                    },
+                },
             }
         )
     except AuthApiError as exc:
@@ -727,16 +754,12 @@ async def signup_user(
             detail="Signup failed",
         )
 
-    if not response.session:
-        raise HTTPException(
-            status_code=400,
-            detail="Signup requires an active auth session to create a profile",
-        )
+    access_token = response.session.access_token if response.session else None
 
     final_role = _ensure_role_for_user(
         response.user.id,
         role,
-        response.session.access_token,
+        access_token,
     )
 
     profile = await _create_profile_for_role(
@@ -746,7 +769,7 @@ async def signup_user(
         full_name,
         clean_phone,
         company_name,
-        response.session.access_token,
+        access_token,
     )
 
     auth_response = _build_auth_response(
@@ -755,7 +778,13 @@ async def signup_user(
         final_role,
         profile,
     )
-    auth_response["message"] = "Signup successful"
+    requires_email_verification = response.session is None
+    auth_response["requires_email_verification"] = requires_email_verification
+    auth_response["message"] = (
+        "Verification email sent. Verify your email, then log in to PLAYNEXIS."
+        if requires_email_verification
+        else "Signup successful"
+    )
 
     return auth_response
 
@@ -802,7 +831,10 @@ async def login_user(
     if profile is None:
         raise HTTPException(status_code=403, detail="Account setup is incomplete")
 
-    needs_profile_completion = not (profile or {}).get("phone")
+    if final_role == "admin" and profile.get("status") != "active":
+        raise HTTPException(status_code=403, detail="Admin account is not active")
+
+    needs_profile_completion = final_role != "admin" and not (profile or {}).get("phone")
 
     auth_response = _build_auth_response(
         response.user,
@@ -840,7 +872,7 @@ async def refresh_user_session(refresh_token: str):
 
 
 async def get_google_oauth_url(
-    role: UserRole | None,
+    role: SignupRole | None,
     intent: str = "login",
     prompt: str | None = None,
     frontend_url: str | None = None,
@@ -882,7 +914,7 @@ async def get_google_oauth_url(
 
 
 async def complete_google_session(
-    access_token: str,
+    access_token: str | None,
     refresh_token: str | None,
 ):
     user_response = supabase.auth.get_user(
@@ -982,7 +1014,7 @@ async def complete_google_code(
             response.user.id,
             response.session.access_token,
         )
-        if stored_role in ("player", "owner"):
+        if stored_role in ("player", "owner", "admin"):
             raise HTTPException(
                 status_code=409,
                 detail=(
@@ -1024,8 +1056,13 @@ async def complete_google_code(
             response.session.access_token,
         )
 
+    if final_role == "admin" and (not profile or profile.get("status") != "active"):
+        raise HTTPException(status_code=403, detail="Admin account is not active")
+
     phone_value = (profile or {}).get("phone")
-    needs_profile_completion = not phone_value or not str(phone_value).strip()
+    needs_profile_completion = final_role != "admin" and (
+        not phone_value or not str(phone_value).strip()
+    )
 
     auth_response = _build_auth_response(
         response.user,

@@ -194,10 +194,8 @@ def _ensure_auth_user(client, email, full_name, role):
 
 
 def seed():
-    if not settings.SUPABASE_SERVICE_ROLE_KEY and not settings.SUPABASE_KEY.startswith("sb_secret_"):
-        raise RuntimeError(
-            "Set SUPABASE_SERVICE_ROLE_KEY in .env before seeding auth users."
-        )
+    if not settings.SUPABASE_KEY.startswith("sb_secret_"):
+        raise RuntimeError("SUPABASE_KEY must contain a Supabase Secret Key before seeding auth users.")
 
     client = get_supabase_admin_client()
 

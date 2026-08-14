@@ -14,7 +14,7 @@ from app.auth.schemas import (
     LoginRequest,
     RefreshSessionRequest,
     SignupRequest,
-    UserRole,
+    SignupRole,
     OAuthCompleteRequest,
     PhoneOtpSendRequest,
     PhoneOtpVerifyRequest,
@@ -159,7 +159,7 @@ async def refresh_session(payload: RefreshSessionRequest):
 @router.get("/google")
 async def google_auth(
     request: Request,
-    role: UserRole | None = Query(default=None),
+    role: SignupRole | None = Query(default=None),
     intent: str = Query(default="login"),
     prompt: str | None = Query(default=None),
     frontend_url: str | None = Query(default=None),
@@ -262,6 +262,12 @@ async def google_auth(
             raise HTTPException(
                 status_code=400,
                 detail="Account type is required for Google signup",
+            )
+
+        if intent == "signup" and role != "player":
+            raise HTTPException(
+                status_code=403,
+                detail="Public Owner registration is not available.",
             )
 
         requested_role = role if intent == "signup" else None

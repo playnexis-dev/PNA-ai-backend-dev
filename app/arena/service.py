@@ -6,6 +6,7 @@ from fastapi import HTTPException
 from postgrest.exceptions import APIError
 
 from app.arena.schemas import (
+    ArenaContactEventCreate,
     ArenaCreate,
     ArenaUpdate,
     MaintenanceCancel,
@@ -133,6 +134,7 @@ def _normalize_turf_sports(values):
 
 def _sanitize_public_arena(arena: dict):
     public_arena = dict(arena)
+    public_arena.pop("management_mode", None)
     metadata = dict(public_arena.get("metadata") or {})
     contact_number = "".join(
         character
@@ -574,7 +576,6 @@ def set_arena_active(context: AuthContext, arena_id: str, is_active: bool):
 
 def set_arena_booking_enabled(context: AuthContext, arena_id: str, booking_enabled: bool):
     owner = require_role(context, "owner")
-    _ensure_owner_arena(context, owner["id"], arena_id)
     response = (
         _client(context)
         .table("arenas")
@@ -1548,6 +1549,60 @@ def get_arena_contact(context: AuthContext, arena_id: str):
         "contact_country_code": metadata.get("contact_country_code") or "",
         "contact_number": metadata.get("contact_number") or "",
     }
+
+
+def track_arena_contact_event(
+    context: AuthContext | None,
+    arena_id: str,
+    payload: ArenaContactEventCreate,
+):
+    arena = get_arena_detail(arena_id)
+    client = get_supabase_admin_client()
+    anonymous_id = str(payload.anonymous_id)
+    user_id = str(context.user.id) if context else None
+
+    try:
+        if user_id:
+            (
+                client.table("arena_contact_events")
+                .update({"user_id": user_id})
+                .eq("anonymous_id", anonymous_id)
+                .is_("user_id", "null")
+                .execute()
+            )
+
+        if user_id and payload.event_id:
+            existing = (
+                client.table("arena_contact_events")
+                .select("*")
+                .eq("id", str(payload.event_id))
+                .eq("arena_id", arena_id)
+                .eq("anonymous_id", anonymous_id)
+                .maybe_single()
+                .execute()
+            )
+            if existing and existing.data:
+                return existing.data
+
+        response = client.table("arena_contact_events").insert({
+            "arena_id": arena_id,
+            "arena_name": arena.get("name") or "Arena",
+            "user_id": user_id,
+            "anonymous_id": anonymous_id,
+            "event_type": payload.event_type,
+        }).execute()
+    except APIError as exc:
+        detail = str(exc)
+        if "arena_contact_events" in detail:
+            raise HTTPException(
+                status_code=503,
+                detail="Contact tracking is not ready. Apply the latest Supabase migration.",
+            ) from exc
+        raise HTTPException(status_code=400, detail="Could not record contact action") from exc
+
+    if not response.data:
+        raise HTTPException(status_code=500, detail="Could not record contact action")
+    return response.data[0]
 
 
 def _slot_overlaps_maintenance(arena_id: str, slot: dict):

@@ -47,58 +47,26 @@ def rank_arenas_by_location(
 
     for arena in arenas:
         item = dict(arena)
-        candidates = _location_candidates(item)
-        same_city_candidates = [
-            candidate for candidate in candidates
-            if target_city and normalize_city(candidate.get("city")) == target_city
-        ]
-        located_same_city_candidates = [
-            candidate for candidate in same_city_candidates if candidate.get("has_coordinates")
-        ]
-        same_city = bool(same_city_candidates) or (
-            bool(target_city) and normalize_city(item.get("city")) == target_city
-        )
-        located_candidates = [candidate for candidate in candidates if candidate.get("has_coordinates")]
-        selected_location: dict[str, Any] | None = None
+        arena_latitude = _coordinate(item.get("latitude"), -90, 90)
+        arena_longitude = _coordinate(item.get("longitude"), -180, 180)
+        has_arena_coordinates = arena_latitude is not None and arena_longitude is not None
+        same_city = bool(target_city) and normalize_city(item.get("city")) == target_city
         distance_km: float | None = None
 
-        if has_origin and located_candidates:
-            if same_city_candidates:
-                preferred = located_same_city_candidates
-            else:
-                preferred = [
-                    candidate for candidate in located_candidates
-                    if _inside_radius_bounding_box(
-                        float(latitude),
-                        float(longitude),
-                        float(candidate["latitude"]),
-                        float(candidate["longitude"]),
-                        radius_km,
-                    )
-                ]
-            if preferred:
-                selected_location = min(
-                    preferred,
-                    key=lambda candidate: haversine_distance_km(
-                        float(latitude),
-                        float(longitude),
-                        float(candidate["latitude"]),
-                        float(candidate["longitude"]),
-                    ),
-                )
+        if has_origin and has_arena_coordinates:
+            if same_city or _inside_radius_bounding_box(
+                float(latitude),
+                float(longitude),
+                float(arena_latitude),
+                float(arena_longitude),
+                radius_km,
+            ):
                 distance_km = haversine_distance_km(
                     float(latitude),
                     float(longitude),
-                    float(selected_location["latitude"]),
-                    float(selected_location["longitude"]),
+                    float(arena_latitude),
+                    float(arena_longitude),
                 )
-        elif same_city_candidates:
-            selected_location = next(
-                (candidate for candidate in same_city_candidates if candidate.get("has_coordinates")),
-                same_city_candidates[0],
-            )
-        elif located_candidates:
-            selected_location = located_candidates[0]
 
         if target_city:
             if same_city:
@@ -114,13 +82,10 @@ def rank_arenas_by_location(
         else:
             group = "unranked"
 
-        if selected_location and selected_location.get("has_coordinates"):
-            item["latitude"] = selected_location["latitude"]
-            item["longitude"] = selected_location["longitude"]
-        item["nearest_turf_id"] = selected_location.get("turf_id") if selected_location else None
+        item["nearest_turf_id"] = None
         item["distance_km"] = round(distance_km, 1) if distance_km is not None else None
         item["proximity_group"] = group
-        item["location_incomplete"] = not located_candidates
+        item["location_incomplete"] = not has_arena_coordinates
         rating = float(item.get("rating") or 0)
 
         if group == "same_city" and distance_km is not None:
@@ -135,34 +100,6 @@ def rank_arenas_by_location(
 
     ranked.sort(key=lambda entry: entry[0])
     return [item for _, item in ranked]
-
-
-def _location_candidates(arena: dict[str, Any]) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    for turf in arena.get("turfs") or []:
-        if turf.get("is_active") is False or turf.get("status") == "inactive":
-            continue
-        turf_latitude = _coordinate(turf.get("latitude"), -90, 90)
-        turf_longitude = _coordinate(turf.get("longitude"), -180, 180)
-        candidates.append({
-            "turf_id": turf.get("id"),
-            "city": turf.get("city") or arena.get("city"),
-            "latitude": turf_latitude,
-            "longitude": turf_longitude,
-            "has_coordinates": turf_latitude is not None and turf_longitude is not None,
-        })
-
-    if not any(candidate["has_coordinates"] for candidate in candidates):
-        arena_latitude = _coordinate(arena.get("latitude"), -90, 90)
-        arena_longitude = _coordinate(arena.get("longitude"), -180, 180)
-        candidates.append({
-            "turf_id": None,
-            "city": arena.get("city"),
-            "latitude": arena_latitude,
-            "longitude": arena_longitude,
-            "has_coordinates": arena_latitude is not None and arena_longitude is not None,
-        })
-    return candidates
 
 
 def _coordinate(value: Any, minimum: float, maximum: float) -> float | None:

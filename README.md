@@ -47,13 +47,27 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ## Environment Variables
 
 - `SUPABASE_URL`: Supabase project URL.
-- `SUPABASE_KEY`: Supabase anon key.
-- `SUPABASE_SERVICE_ROLE_KEY`: Supabase service-role key, required for admin operations like seeding users and some owner/player sync flows.
+- `SUPABASE_KEY`: Supabase server-side Secret Key (`sb_secret_...`), used for normal backend access and privileged operations such as account deletion and Admin management. Never expose it to the frontend.
 - `JWT_SECRET_KEY`: Local application secret.
 - `FRONTEND_URL`: Frontend origin, usually `http://localhost:5173`.
 - `BACKEND_URL`: Backend origin, usually `http://127.0.0.1:8000`.
 - `ARENA_MEDIA_BUCKET`: Supabase Storage bucket for arena photos/videos. Current expected value is `Arena Media`.
 - `DATABASE_URL`: Optional for normal app runtime. Use it only for direct database scripts/features.
+
+### Supabase verification email setup
+
+Email/password signup supports projects where **Confirm email** is enabled. The backend requests a redirect to
+`{FRONTEND_URL}/auth/login?email_verified=1`, creates the pending Player profile, and does not issue an application
+session until the email is verified.
+
+For PLAYNEXIS-branded delivery, configure the hosted Supabase project in **Authentication > Email**:
+
+- Enable **Confirm email**.
+- Add the deployed frontend origin and `/auth/login` to the allowed Site URL/Redirect URLs.
+- Configure custom SMTP using a PLAYNEXIS-controlled sender address.
+- Customize the confirmation template sender name, subject, and body with PLAYNEXIS branding.
+
+SMTP passwords and provider credentials belong in Supabase, not this repository or the frontend.
 
 ## Create Or Repair Supabase Tables
 

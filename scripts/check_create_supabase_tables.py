@@ -24,6 +24,8 @@ REQUIRED_TABLES = (
     "user_roles",
     "players",
     "owners",
+    "admins",
+    "admin_audit_logs",
     "profile_phone_registry",
     "arenas",
     "turfs",
@@ -34,6 +36,7 @@ REQUIRED_TABLES = (
     "reviews",
     "notifications",
     "analytics_events",
+    "arena_contact_events",
 )
 
 

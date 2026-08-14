@@ -7,29 +7,30 @@ from pydantic import (
 )
 
 
-UserRole = Literal["player", "owner"]
+UserRole = Literal["player", "owner", "admin"]
+SignupRole = Literal["player", "owner"]
 
 class OAuthCompleteRequest(BaseModel):
-    role: Literal["owner", "player"]
+    role: SignupRole
     full_name: Optional[str] = None
     phone: Optional[str] = None
     company_name: Optional[str] = None
 
 
 class PhoneOtpSendRequest(BaseModel):
-    role: UserRole
+    role: SignupRole
     phone: str = Field(min_length=8, max_length=20)
 
 
 class PhoneOtpVerifyRequest(BaseModel):
-    role: UserRole
+    role: SignupRole
     phone: str = Field(min_length=8, max_length=20)
     code: str = Field(min_length=4, max_length=8)
 
 class SignupRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
-    role: UserRole
+    role: Literal["player"]
     full_name: str = Field(min_length=1)
     phone: str = Field(min_length=8, max_length=20)
     company_name: str | None = None
@@ -47,10 +48,10 @@ class RefreshSessionRequest(BaseModel):
 class GoogleSessionRequest(BaseModel):
     access_token: str
     refresh_token: str | None = None
-    role: UserRole
+    role: SignupRole
 
 
 class GoogleCodeRequest(BaseModel):
     code: str
     state: str
-    role: UserRole
+    role: SignupRole

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Upload
 from pydantic import ValidationError
 
 from app.arena.schemas import (
+    ArenaContactEventCreate,
     ArenaCreate,
     ArenaImageDelete,
     ArenaImagesReorder,
@@ -54,8 +55,9 @@ from app.arena.service import (
     upload_arena_media,
     upload_payment_qr,
     upload_turf_media,
+    track_arena_contact_event,
 )
-from app.core.auth_context import AuthContext, get_current_auth_context
+from app.core.auth_context import AuthContext, get_current_auth_context, get_optional_auth_context
 
 router = APIRouter(prefix="/arenas", tags=["Arenas"])
 
@@ -134,6 +136,15 @@ async def authenticated_arena_contact(
     context: AuthContext = Depends(get_current_auth_context),
 ):
     return get_arena_contact(context, arena_id)
+
+
+@router.post("/{arena_id}/contact-events")
+async def arena_contact_event(
+    arena_id: str,
+    payload: ArenaContactEventCreate,
+    context: AuthContext | None = Depends(get_optional_auth_context),
+):
+    return track_arena_contact_event(context, arena_id, payload)
 
 
 @router.patch("/{arena_id}")

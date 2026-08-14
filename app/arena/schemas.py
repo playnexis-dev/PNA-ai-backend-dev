@@ -1,5 +1,6 @@
 from datetime import date, datetime, time
-from typing import Any, Self
+from typing import Any, Literal, Self
+from uuid import UUID
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, EmailStr, Field, model_validator
 
@@ -38,7 +39,8 @@ class ArenaBase(BaseModel):
 
 
 class ArenaCreate(ArenaBase):
-    pass
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
 
 
 class ArenaUpdate(BaseModel):
@@ -76,6 +78,12 @@ class ArenaUpdate(BaseModel):
         if (self.latitude is None) != (self.longitude is None):
             raise ValueError("Latitude and longitude must be provided together")
         return self
+
+
+class ArenaContactEventCreate(BaseModel):
+    event_type: Literal["view_number", "whatsapp"]
+    anonymous_id: UUID
+    event_id: UUID | None = None
 
 
 class SlotCreate(BaseModel):
@@ -158,12 +166,6 @@ class TurfCreate(BaseModel):
     close_time: time
     size: str = Field(min_length=1, max_length=100)
     flooring: str = Field(min_length=1, max_length=100)
-    address: str = Field(min_length=1, max_length=300)
-    city: str = Field(min_length=1, max_length=50)
-    state: str | None = Field(default=None, max_length=100)
-    country: str = Field(default="India", min_length=1, max_length=100)
-    latitude: float = Field(ge=-90, le=90)
-    longitude: float = Field(ge=-180, le=180)
     used_for_more_sports: bool = False
     capacity: int = Field(default=1, gt=0)
     status: str = Field(default="active", pattern="^(active|inactive)$")
@@ -192,24 +194,11 @@ class TurfUpdate(BaseModel):
     close_time: time | None = None
     size: str | None = Field(default=None, min_length=1, max_length=100)
     flooring: str | None = Field(default=None, min_length=1, max_length=100)
-    address: str | None = Field(default=None, min_length=1, max_length=300)
-    city: str | None = Field(default=None, min_length=1, max_length=50)
-    state: str | None = Field(default=None, max_length=100)
-    country: str | None = Field(default=None, min_length=1, max_length=100)
-    latitude: float | None = Field(default=None, ge=-90, le=90)
-    longitude: float | None = Field(default=None, ge=-180, le=180)
     used_for_more_sports: bool | None = None
     capacity: int | None = Field(default=None, gt=0)
     status: str | None = Field(default=None, pattern="^(active|inactive)$")
     media: list[str] | None = None
     metadata: dict[str, Any] | None = None
-
-    @model_validator(mode="after")
-    def validate_coordinate_pair(self) -> Self:
-        if (self.latitude is None) != (self.longitude is None):
-            raise ValueError("Latitude and longitude must be provided together")
-        return self
-
 
 class MaintenanceCreate(BaseModel):
     turf_id: str | None = None

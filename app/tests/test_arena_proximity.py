@@ -50,12 +50,14 @@ class ArenaProximityTests(unittest.TestCase):
         self.assertGreater(distance, 0.1)
         self.assertLess(distance, 0.2)
 
-    def test_nearest_active_turf_drives_arena_distance(self):
+    def test_turf_coordinates_do_not_replace_arena_location(self):
         ranked = rank_arenas_by_location(
             [{
                 "id": "arena",
                 "name": "Arena",
                 "city": "Bhopal",
+                "latitude": 23.25,
+                "longitude": 77.40,
                 "turfs": [
                     {"id": "far", "city": "Bhopal", "latitude": 23.35, "longitude": 77.50, "status": "active"},
                     {"id": "near", "city": "Bhopal", "latitude": 23.26, "longitude": 77.41, "status": "active"},
@@ -66,11 +68,11 @@ class ArenaProximityTests(unittest.TestCase):
             longitude=77.4126,
         )
 
-        self.assertEqual(ranked[0]["nearest_turf_id"], "near")
-        self.assertEqual(ranked[0]["latitude"], 23.26)
-        self.assertLess(ranked[0]["distance_km"], 1)
+        self.assertIsNone(ranked[0]["nearest_turf_id"])
+        self.assertEqual(ranked[0]["latitude"], 23.25)
+        self.assertGreater(ranked[0]["distance_km"], 1)
 
-    def test_legacy_arena_coordinates_are_used_until_turf_is_located(self):
+    def test_arena_coordinates_are_authoritative(self):
         ranked = rank_arenas_by_location(
             [{
                 "id": "legacy",
