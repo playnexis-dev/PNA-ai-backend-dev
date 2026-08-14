@@ -36,6 +36,7 @@ REQUIRED_TABLES = (
     "reviews",
     "notifications",
     "analytics_events",
+    "site_counters",
     "arena_contact_events",
 )
 

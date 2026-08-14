@@ -16,6 +16,7 @@ from app.profile.routes import router as profile_router
 from app.reviews.routes import router as reviews_router
 from app.auth.routes import router as auth_router
 from app.admin.routes import public_router as admin_auth_router, router as admin_router
+from app.site.routes import router as site_router
 from app.core.config import settings
 
 logging.basicConfig(
@@ -57,6 +58,7 @@ app.include_router(booking_router)
 app.include_router(dashboard_router)
 app.include_router(notifications_router)
 app.include_router(reviews_router)
+app.include_router(site_router)
 
 
 @app.get("/")
