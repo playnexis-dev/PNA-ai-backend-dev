@@ -27,6 +27,7 @@ class AdminInviteAcceptRequest(BaseModel):
 
 class AdminArenaCreateRequest(BaseModel):
     owner_id: str = Field(min_length=1)
+    management_mode: ManagementMode = "owner"
     arena: ArenaCreate
 
 

@@ -151,6 +151,8 @@ async def arenas(
 async def arena_create(payload: AdminArenaCreateRequest, context: AuthContext = Depends(get_current_auth_context)):
     scoped = owner_scoped_context_for_owner(context, payload.owner_id)
     result = create_arena(scoped, payload.arena)
+    if payload.management_mode == "admin":
+        result = set_arena_management(context, str(result["id"]), "admin")
     return _record(context, "arena.created", "arena", str(result["id"]), result)
 
 

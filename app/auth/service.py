@@ -426,6 +426,7 @@ def _build_auth_response(
             "id": user.id,
             "email": user.email,
             "role": role,
+            "full_name": _get_google_full_name(user),
         },
         "session": {
             "access_token": session.access_token if session else None,

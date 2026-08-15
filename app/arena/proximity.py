@@ -36,7 +36,7 @@ def rank_arenas_by_location(
     city: str | None = None,
     latitude: float | None = None,
     longitude: float | None = None,
-    radius_km: float = 50,
+    radius_km: float = 20,
 ) -> list[dict[str, Any]]:
     if (latitude is None) != (longitude is None):
         raise ValueError("Latitude and longitude must be provided together")

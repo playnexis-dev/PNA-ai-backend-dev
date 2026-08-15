@@ -15,7 +15,7 @@ def get_player_dashboard(
     city: str | None = None,
     latitude: float | None = None,
     longitude: float | None = None,
-    radius_km: float = 50,
+    radius_km: float = 20,
 ):
     player = require_role(context, "player")
     client = _client(context)
@@ -45,7 +45,7 @@ def get_player_dashboard(
         latitude=latitude,
         longitude=longitude,
         radius_km=radius_km,
-    )[:6]
+    )[:20]
 
     total_spent = sum(float(item.get("total_amount") or 0) for item in bookings)
     upcoming = [

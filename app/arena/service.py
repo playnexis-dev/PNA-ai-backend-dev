@@ -155,7 +155,7 @@ def list_active_arenas(
     sport: str | None = None,
     latitude: float | None = None,
     longitude: float | None = None,
-    radius_km: float = 50,
+    radius_km: float = 20,
 ):
     client = get_supabase_client()
     query = (
@@ -508,11 +508,17 @@ def remove_arena_image(context: AuthContext, arena_id: str, image_url: str):
     owner = require_role(context, "owner")
     arena = _ensure_owner_arena(context, owner["id"], arena_id)
     images = [image for image in list(arena.get("images") or []) if image != image_url]
+    update_data = {"images": images}
+    metadata = dict(arena.get("metadata") or {})
+    if metadata.get("cover_media_url") == image_url:
+        metadata.pop("cover_media_url", None)
+        metadata.pop("cover_position", None)
+        update_data["metadata"] = metadata
 
     response = (
         _client(context)
         .table("arenas")
-        .update({"images": images})
+        .update(update_data)
         .eq("id", arena_id)
         .eq("owner_id", owner["id"])
         .execute()
@@ -841,6 +847,20 @@ def remove_turf_media(
     if not response.data:
         raise HTTPException(status_code=500, detail="Failed to remove turf media")
 
+    arena = _ensure_owner_arena(context, owner["id"], arena_id)
+    arena_metadata = dict(arena.get("metadata") or {})
+    if arena_metadata.get("cover_media_url") == media_url:
+        arena_metadata.pop("cover_media_url", None)
+        arena_metadata.pop("cover_position", None)
+        (
+            _client(context)
+            .table("arenas")
+            .update({"metadata": arena_metadata})
+            .eq("id", arena_id)
+            .eq("owner_id", owner["id"])
+            .execute()
+        )
+
     object_path = _storage_path_from_public_url(media_url)
     if object_path:
         try:
@@ -918,6 +938,20 @@ def delete_turf(context: AuthContext, arena_id: str, turf_id: str):
         )
     except APIError as exc:
         raise HTTPException(status_code=400, detail=exc.message) from exc
+
+    arena = _ensure_owner_arena(context, owner["id"], arena_id)
+    arena_metadata = dict(arena.get("metadata") or {})
+    if arena_metadata.get("cover_media_url") in set(turf.get("media") or []):
+        arena_metadata.pop("cover_media_url", None)
+        arena_metadata.pop("cover_position", None)
+        (
+            _client(context)
+            .table("arenas")
+            .update({"metadata": arena_metadata})
+            .eq("id", arena_id)
+            .eq("owner_id", owner["id"])
+            .execute()
+        )
 
     storage_paths = [
         path
