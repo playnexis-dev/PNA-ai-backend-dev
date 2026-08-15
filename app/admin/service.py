@@ -219,7 +219,11 @@ def accept_admin_invite(access_token: str, password: str, full_name: str | None)
 
 def list_owners_for_admin(context: AuthContext):
     _admin(context)
-    return get_supabase_client(context.access_token).table("owners").select("id,user_id,email,full_name,company_name").order("full_name").execute().data or []
+    client = get_supabase_client(context.access_token)
+    owners = client.table("owners").select("id,user_id,email,full_name,company_name").order("full_name").execute().data or []
+    admin_rows = client.table("admins").select("user_id").execute().data or []
+    admin_user_ids = {str(row.get("user_id")) for row in admin_rows if row.get("user_id")}
+    return [owner for owner in owners if str(owner.get("user_id")) not in admin_user_ids]
 
 
 def list_all_arenas(context: AuthContext):
@@ -257,9 +261,13 @@ def owner_scoped_context(context: AuthContext, arena_id: str) -> AuthContext:
 
 def owner_scoped_context_for_owner(context: AuthContext, owner_id: str) -> AuthContext:
     _admin(context)
-    owner = get_supabase_client(context.access_token).table("owners").select("*").eq("id", owner_id).maybe_single().execute().data
+    client = get_supabase_client(context.access_token)
+    owner = client.table("owners").select("*").eq("id", owner_id).maybe_single().execute().data
     if not owner:
         raise HTTPException(status_code=404, detail="Owner not found")
+    admin = client.table("admins").select("user_id").eq("user_id", owner["user_id"]).maybe_single().execute().data
+    if admin:
+        raise HTTPException(status_code=422, detail="An Admin account cannot own an arena. Select an Owner account.")
     return AuthContext(context.access_token, context.user, "owner", owner)
 
 
@@ -273,9 +281,7 @@ def set_arena_management(
     client = get_supabase_client(context.access_token)
 
     if management_mode == "owner" and owner_id:
-        owner = client.table("owners").select("id").eq("id", owner_id).maybe_single().execute().data
-        if not owner:
-            raise HTTPException(status_code=404, detail="Owner not found")
+        owner_scoped_context_for_owner(context, owner_id)
         client.rpc(
             "admin_assign_arena_owner",
             {"p_arena_id": arena_id, "p_owner_id": owner_id},
