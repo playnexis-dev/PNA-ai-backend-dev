@@ -35,8 +35,8 @@ frontend_url = settings.FRONTEND_URL.rstrip("/")
 allowed_origins = [
     frontend_url,
     "https://playnexis.vercel.app",
-    "https://YOUR-GODADDY-DOMAIN.com",
-    "https://www.YOUR-GODADDY-DOMAIN.com",
+    "https://playnexis.in",
+    "https://www.playnexis.in",
 ]
 
 app.add_middleware(

@@ -224,10 +224,11 @@ def list_owner_arenas(context: AuthContext):
 
 def get_owner_arena_detail(context: AuthContext, arena_id: str):
     owner = require_role(context, "owner")
-    _ensure_rolling_week_slots(arena_id)
     arena = _ensure_owner_arena(context, owner["id"], arena_id)
     turfs = list_owner_turfs(context, arena_id)
     maintenance = list_maintenance_windows(context, arena_id)
+    # list_owner_slots is the single place responsible for preparing rolling
+    # availability. Running it here as well doubled the work for every refresh.
     slots = list_owner_slots(context, arena_id)
     active_slots = [slot for slot in slots if slot.get("status") == "active"]
     booked_slots = [slot for slot in slots if int(slot.get("booked_count") or 0) > 0]

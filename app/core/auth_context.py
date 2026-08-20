@@ -3,7 +3,7 @@ from typing import Any, Literal
 
 from fastapi import Header, HTTPException
 
-from app.core.supabase import get_supabase_client, supabase
+from app.core.supabase import get_supabase_admin_client, get_supabase_client, supabase
 
 UserRole = Literal["player", "owner", "admin"]
 
@@ -14,6 +14,7 @@ class AuthContext:
     user: Any
     role: UserRole
     profile: dict | None
+    email_verified: bool = True
 
 
 def get_bearer_token(authorization: str | None):
@@ -77,11 +78,26 @@ def get_current_auth_context(
     if role == "admin" and (not profile or profile.get("status") != "active"):
         raise HTTPException(status_code=403, detail="Admin account is not active")
 
+    verification_response = (
+        get_supabase_admin_client()
+        .table("email_verifications")
+        .select("verified_at")
+        .eq("user_id", user_response.user.id)
+        .maybe_single()
+        .execute()
+    )
+    email_verified = (
+        bool(verification_response.data.get("verified_at"))
+        if verification_response and verification_response.data
+        else bool(getattr(user_response.user, "email_confirmed_at", None))
+    )
+
     return AuthContext(
         access_token=token,
         user=user_response.user,
         role=role,
         profile=profile,
+        email_verified=email_verified,
     )
 
 
@@ -115,3 +131,12 @@ def require_any_role(context: AuthContext, *roles: UserRole):
         raise HTTPException(status_code=403, detail="Account profile is incomplete")
 
     return context.profile
+
+
+def require_verified_email(context: AuthContext):
+    if not context.email_verified:
+        raise HTTPException(
+            status_code=403,
+            detail="Verify your email to continue with this action.",
+        )
+    return context

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from app.core.auth_context import AuthContext, get_current_auth_context
+from app.core.auth_context import AuthContext, get_current_auth_context, require_verified_email
 from app.reviews.schemas import ReviewCreate
 from app.reviews.service import create_review, get_review_eligibility, list_arena_reviews
 
@@ -25,4 +25,5 @@ async def player_create_review(
     payload: ReviewCreate,
     context: AuthContext = Depends(get_current_auth_context),
 ):
+    require_verified_email(context)
     return create_review(context, payload)

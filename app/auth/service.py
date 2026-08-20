@@ -1,10 +1,14 @@
 import base64
+import asyncio
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 import hashlib
 import hmac
 import json
 import logging
 import secrets
+import smtplib
+import ssl
 import time
 from urllib.parse import urlencode
 from urllib.parse import urlparse
@@ -23,10 +27,260 @@ from app.player.service import create_player
 
 logger = logging.getLogger(__name__)
 
+GOOGLE_ACCOUNT_NOT_REGISTERED_CODE = "account_not_registered"
+GOOGLE_ACCOUNT_NOT_REGISTERED_MESSAGE = (
+    "This Google account is not registered with PLAYNEXIS."
+)
+
 _GOOGLE_OAUTH_TICKETS: dict[str, dict] = {}
 _GOOGLE_OAUTH_STATE_TTL_SECONDS = 600
 _PHONE_OTP_STORE: dict[str, dict] = {}
 _PHONE_OTP_TTL_SECONDS = 300
+_VERIFICATION_RESEND_COOLDOWNS: dict[str, float] = {}
+_VERIFICATION_RESEND_COOLDOWN_SECONDS = 60
+_VERIFICATION_PROVIDER_RATE_LIMIT_SECONDS = 60 * 60
+
+
+def _verification_record(user_id: str):
+    response = (
+        get_supabase_admin_client()
+        .table("email_verifications")
+        .select("*")
+        .eq("user_id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    return response.data if response and response.data else None
+
+
+def _upsert_verification_record(
+    user_id: str,
+    email: str,
+    *,
+    verified: bool | None = None,
+    token_version: int | None = None,
+    last_sent_at: str | None = None,
+):
+    client = get_supabase_admin_client()
+    existing = _verification_record(user_id)
+    payload = {
+        "email": email.strip().lower(),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if verified is not None:
+        payload["verified_at"] = (
+            datetime.now(timezone.utc).isoformat() if verified else None
+        )
+    if token_version is not None:
+        payload["token_version"] = token_version
+    if last_sent_at is not None:
+        payload["last_sent_at"] = last_sent_at
+
+    if existing:
+        response = (
+            client.table("email_verifications")
+            .update(payload)
+            .eq("user_id", user_id)
+            .execute()
+        )
+    else:
+        payload["user_id"] = user_id
+        response = client.table("email_verifications").insert(payload).execute()
+
+    return response.data[0] if response and response.data else {**(existing or {}), **payload}
+
+
+def _email_verification_status(user, *, default_verified: bool | None = None):
+    record = _verification_record(user.id)
+    if record is not None:
+        return bool(record.get("verified_at"))
+    if default_verified is not None:
+        verified = default_verified
+    else:
+        verified = bool(getattr(user, "email_confirmed_at", None))
+    _upsert_verification_record(
+        user.id,
+        user.email or "",
+        verified=verified,
+    )
+    return verified
+
+
+def _create_email_verification_token(
+    user_id: str,
+    email: str,
+    token_version: int,
+):
+    payload = {
+        "user_id": user_id,
+        "email": email.strip().lower(),
+        "version": token_version,
+        "created_at": time.time(),
+        "nonce": secrets.token_urlsafe(12),
+    }
+    body = _base64_url_encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    )
+    signature = _base64_url_encode(
+        hmac.new(
+            settings.JWT_SECRET_KEY.encode("utf-8"),
+            body.encode("ascii"),
+            hashlib.sha256,
+        ).digest()
+    )
+    return f"{body}.{signature}"
+
+
+def _read_email_verification_token(token: str):
+    try:
+        body, signature = token.split(".", 1)
+        expected = _base64_url_encode(
+            hmac.new(
+                settings.JWT_SECRET_KEY.encode("utf-8"),
+                body.encode("ascii"),
+                hashlib.sha256,
+            ).digest()
+        )
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("signature")
+        padded = body + "=" * (-len(body) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode("utf-8"))
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid verification link") from exc
+
+    age = time.time() - float(payload.get("created_at", 0))
+    if age > settings.EMAIL_VERIFICATION_TOKEN_TTL_SECONDS:
+        raise HTTPException(
+            status_code=400,
+            detail="This verification link has expired. Request a new email.",
+        )
+    return payload
+
+
+def _smtp_is_configured():
+    return bool(settings.SMTP_HOST and settings.SMTP_FROM_EMAIL)
+
+
+def _send_verification_message(email: str, verification_url: str):
+    message = EmailMessage()
+    message["Subject"] = "Verify your PLAYNEXIS email"
+    message["From"] = f"{settings.SMTP_FROM_NAME} <{settings.SMTP_FROM_EMAIL}>"
+    message["To"] = email
+    message.set_content(
+        "Verify your PLAYNEXIS email by opening this link:\n\n"
+        f"{verification_url}\n\n"
+        "If you did not create this account, you can ignore this email."
+    )
+    message.add_alternative(
+        f"""
+        <div style="font-family:Arial,sans-serif;max-width:560px;margin:auto;color:#17233b">
+          <h1 style="color:#0057b8">PLAYNEXIS</h1>
+          <h2>Verify your email</h2>
+          <p>Confirm this email address to unlock bookings, reviews, contact details, and sensitive account actions.</p>
+          <p style="margin:28px 0"><a href="{verification_url}" style="background:#0057b8;color:white;text-decoration:none;padding:12px 22px;border-radius:8px;font-weight:700">Verify email</a></p>
+          <p style="color:#65758b;font-size:13px">This link expires in 24 hours. If you did not create this account, ignore this email.</p>
+        </div>
+        """,
+        subtype="html",
+    )
+
+    context = ssl.create_default_context()
+    if settings.SMTP_USE_SSL:
+        with smtplib.SMTP_SSL(
+            settings.SMTP_HOST,
+            settings.SMTP_PORT,
+            context=context,
+            timeout=20,
+        ) as server:
+            if settings.SMTP_USERNAME:
+                server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD or "")
+            server.send_message(message)
+        return
+
+    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=20) as server:
+        if settings.SMTP_USE_TLS:
+            server.starttls(context=context)
+        if settings.SMTP_USERNAME:
+            server.login(settings.SMTP_USERNAME, settings.SMTP_PASSWORD or "")
+        server.send_message(message)
+
+
+async def _send_application_verification_email(user_id: str, email: str):
+    if not _smtp_is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Verification email delivery is not configured yet.",
+        )
+
+    record = _verification_record(user_id) or _upsert_verification_record(
+        user_id,
+        email,
+        verified=False,
+    )
+    if record.get("verified_at"):
+        return {"message": "Email is already verified", "resend_available_in_seconds": 0}
+
+    last_sent_at = record.get("last_sent_at")
+    if last_sent_at:
+        sent_at = datetime.fromisoformat(str(last_sent_at).replace("Z", "+00:00"))
+        wait = _VERIFICATION_RESEND_COOLDOWN_SECONDS - int(
+            (datetime.now(timezone.utc) - sent_at).total_seconds()
+        )
+        if wait > 0:
+            raise HTTPException(
+                status_code=429,
+                detail=f"A verification email was already sent. Try again in {wait} seconds.",
+                headers={"Retry-After": str(wait)},
+            )
+
+    version = int(record.get("token_version") or 1) + 1
+    token = _create_email_verification_token(user_id, email, version)
+    verification_url = (
+        f"{settings.FRONTEND_URL.rstrip('/')}/auth/verify-email?"
+        f"{urlencode({'token': token})}"
+    )
+    try:
+        await asyncio.to_thread(_send_verification_message, email, verification_url)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Could not send PLAYNEXIS verification email user_id=%s", user_id)
+        raise HTTPException(
+            status_code=502,
+            detail="Verification email could not be sent. Please try again later.",
+        ) from exc
+
+    now = datetime.now(timezone.utc).isoformat()
+    _upsert_verification_record(
+        user_id,
+        email,
+        token_version=version,
+        last_sent_at=now,
+    )
+    return {
+        "message": "Verification email sent. Check your inbox and spam folder.",
+        "resend_available_in_seconds": _VERIFICATION_RESEND_COOLDOWN_SECONDS,
+    }
+
+
+def _verification_email_key(email: str):
+    return email.strip().lower()
+
+
+def _start_verification_resend_cooldown(email: str):
+    _VERIFICATION_RESEND_COOLDOWNS[_verification_email_key(email)] = (
+        time.monotonic() + _VERIFICATION_RESEND_COOLDOWN_SECONDS
+    )
+
+
+def _verification_resend_wait_seconds(email: str):
+    key = _verification_email_key(email)
+    available_at = _VERIFICATION_RESEND_COOLDOWNS.get(key, 0)
+    remaining = available_at - time.monotonic()
+    if remaining <= 0:
+        _VERIFICATION_RESEND_COOLDOWNS.pop(key, None)
+        return 0
+    return max(1, int(remaining + 0.999))
 
 
 def _base64_url_encode(value: bytes):
@@ -419,7 +673,13 @@ def _build_auth_response(
     profile=None,
     needs_profile_completion: bool = False,
     needs_phone_verification: bool = False,
+    email_verified: bool | None = None,
 ):
+    resolved_email_verified = (
+        _email_verification_status(user)
+        if email_verified is None
+        else email_verified
+    )
     response = {
         "message": "Authentication successful",
         "user": {
@@ -427,6 +687,7 @@ def _build_auth_response(
             "email": user.email,
             "role": role,
             "full_name": _get_google_full_name(user),
+            "email_verified": resolved_email_verified,
         },
         "session": {
             "access_token": session.access_token if session else None,
@@ -439,6 +700,7 @@ def _build_auth_response(
 
     response["needs_profile_completion"] = needs_profile_completion
     response["needs_phone_verification"] = needs_phone_verification
+    response["email_verified"] = resolved_email_verified
 
     return response
 
@@ -711,6 +973,29 @@ async def verify_phone_otp(
     return {"message": "Phone verified successfully", "profile": profile}
 
 
+def _find_auth_user_by_email(email: str):
+    normalized = email.strip().lower()
+    admin = get_supabase_admin_client()
+    page = 1
+    while page <= 10:
+        users = admin.auth.admin.list_users(page=page, per_page=1000) or []
+        for user in users:
+            if str(user.email or "").strip().lower() == normalized:
+                return user
+        if len(users) < 1000:
+            break
+        page += 1
+    return None
+
+
+def _confirm_auth_user_for_application_verification(user):
+    response = get_supabase_admin_client().auth.admin.update_user_by_id(
+        user.id,
+        {"email_confirm": True},
+    )
+    return response.user or user
+
+
 async def signup_user(
     email: str,
     password: str,
@@ -726,36 +1011,56 @@ async def signup_user(
         )
 
     clean_phone = _sanitize_phone(phone)
-    email_redirect_to = f"{settings.FRONTEND_URL.rstrip('/')}/auth/login?email_verified=1"
-
+    admin = get_supabase_admin_client()
     try:
-        response = supabase.auth.sign_up(
+        created = admin.auth.admin.create_user(
             {
                 "email": email,
                 "password": password,
-                "options": {
-                    "email_redirect_to": email_redirect_to,
-                    "data": {
-                        "role": "player",
-                        "full_name": full_name,
-                        "phone": clean_phone,
-                    },
+                "email_confirm": True,
+                "user_metadata": {
+                    "role": "player",
+                    "full_name": full_name,
+                    "phone": clean_phone,
                 },
             }
         )
     except AuthApiError as exc:
         raise HTTPException(
-            status_code=400,
-            detail=str(exc),
+            status_code=409 if "already" in str(exc).lower() else 400,
+            detail=(
+                "An account already exists for this email. Please log in instead."
+                if "already" in str(exc).lower()
+                else str(exc)
+            ),
         ) from exc
 
-    if not response.user:
+    if not created.user:
         raise HTTPException(
             status_code=400,
             detail="Signup failed",
         )
 
-    access_token = response.session.access_token if response.session else None
+    try:
+        response = supabase.auth.sign_in_with_password(
+            {"email": email, "password": password}
+        )
+    except AuthApiError as exc:
+        admin.auth.admin.delete_user(created.user.id)
+        raise HTTPException(status_code=500, detail="Could not start the new session") from exc
+
+    if not response.user or not response.session:
+        admin.auth.admin.delete_user(created.user.id)
+        raise HTTPException(status_code=500, detail="Could not start the new session")
+
+    access_token = response.session.access_token
+
+    _upsert_verification_record(
+        response.user.id,
+        response.user.email or email,
+        verified=False,
+        token_version=1,
+    )
 
     final_role = _ensure_role_for_user(
         response.user.id,
@@ -778,14 +1083,27 @@ async def signup_user(
         response.session,
         final_role,
         profile,
+        email_verified=False,
     )
-    requires_email_verification = response.session is None
-    auth_response["requires_email_verification"] = requires_email_verification
+    auth_response["requires_email_verification"] = True
     auth_response["message"] = (
-        "Verification email sent. Verify your email, then log in to PLAYNEXIS."
-        if requires_email_verification
-        else "Signup successful"
+        "Account created. You can continue now and verify your email from the dashboard."
     )
+    try:
+        delivery = await _send_application_verification_email(
+            response.user.id,
+            response.user.email or email,
+        )
+        auth_response.update(delivery)
+        auth_response["verification_email_sent"] = True
+    except HTTPException as exc:
+        logger.warning(
+            "Account created without verification email user_id=%s detail=%s",
+            response.user.id,
+            exc.detail,
+        )
+        auth_response["verification_email_sent"] = False
+        auth_response["resend_available_in_seconds"] = 0
 
     return auth_response
 
@@ -802,10 +1120,27 @@ async def login_user(
             }
         )
     except AuthApiError as exc:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid credentials",
-        ) from exc
+        if getattr(exc, "code", None) == "email_not_confirmed":
+            existing_user = _find_auth_user_by_email(email)
+            if not existing_user:
+                raise HTTPException(status_code=401, detail="Invalid credentials") from exc
+            _confirm_auth_user_for_application_verification(existing_user)
+            _upsert_verification_record(
+                existing_user.id,
+                existing_user.email or email,
+                verified=False,
+            )
+            try:
+                response = supabase.auth.sign_in_with_password(
+                    {"email": email, "password": password}
+                )
+            except AuthApiError as retry_exc:
+                raise HTTPException(status_code=401, detail="Invalid credentials") from retry_exc
+        else:
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid credentials",
+            ) from exc
 
     if not response.user:
         raise HTTPException(
@@ -845,8 +1180,46 @@ async def login_user(
         needs_profile_completion=needs_profile_completion,
     )
     auth_response["message"] = "Login successful"
+    auth_response["requires_email_verification"] = not auth_response["email_verified"]
 
     return auth_response
+
+
+async def resend_signup_verification(email: str):
+    user = _find_auth_user_by_email(email)
+    if not user:
+        return {
+            "message": "If the account exists, a verification email will be sent.",
+            "resend_available_in_seconds": _VERIFICATION_RESEND_COOLDOWN_SECONDS,
+        }
+    return await _send_application_verification_email(
+        user.id,
+        user.email or email,
+    )
+
+
+async def confirm_application_email(token: str):
+    payload = _read_email_verification_token(token)
+    record = _verification_record(str(payload.get("user_id") or ""))
+    if not record:
+        raise HTTPException(status_code=400, detail="Invalid verification link")
+    if record.get("verified_at"):
+        return {"message": "Email is already verified", "email_verified": True}
+    if str(record.get("email") or "").lower() != str(payload.get("email") or "").lower():
+        raise HTTPException(status_code=400, detail="Invalid verification link")
+    if int(record.get("token_version") or 0) != int(payload.get("version") or -1):
+        raise HTTPException(
+            status_code=400,
+            detail="This verification link is no longer valid. Request a new email.",
+        )
+
+    _upsert_verification_record(
+        record["user_id"],
+        record["email"],
+        verified=True,
+        token_version=int(record.get("token_version") or 1) + 1,
+    )
+    return {"message": "Email verified successfully", "email_verified": True}
 
 
 async def refresh_user_session(refresh_token: str):
@@ -932,6 +1305,11 @@ async def complete_google_session(
         user_response.user.id,
         access_token,
     )
+    _upsert_verification_record(
+        user_response.user.id,
+        user_response.user.email or "",
+        verified=True,
+    )
 
     return {
         "message": "Google login successful",
@@ -939,6 +1317,7 @@ async def complete_google_session(
             "id": user_response.user.id,
             "email": user_response.user.email,
             "role": final_role,
+            "email_verified": True,
         },
         "session": {
             "access_token": access_token,
@@ -998,10 +1377,35 @@ async def complete_google_code(
         )
 
     if oauth_state["intent"] == "login":
-        final_role = _require_role_for_user(
+        stored_role = _get_role_for_user(
             response.user.id,
             response.session.access_token,
         )
+        if stored_role is None:
+            has_existing_profile = any(
+                _get_profile_for_role(
+                    response.user.id,
+                    role,
+                    response.session.access_token,
+                )
+                is not None
+                for role in ("player", "owner", "admin")
+            )
+            if has_existing_profile:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Account setup is incomplete",
+                )
+
+            raise HTTPException(
+                status_code=404,
+                detail=GOOGLE_ACCOUNT_NOT_REGISTERED_MESSAGE,
+            )
+
+        if stored_role not in ("player", "owner", "admin"):
+            raise HTTPException(status_code=403, detail="Account setup is incomplete")
+
+        final_role = stored_role
         profile = _get_profile_for_role(
             response.user.id,
             final_role,
@@ -1060,6 +1464,12 @@ async def complete_google_code(
     if final_role == "admin" and (not profile or profile.get("status") != "active"):
         raise HTTPException(status_code=403, detail="Admin account is not active")
 
+    _upsert_verification_record(
+        response.user.id,
+        response.user.email or "",
+        verified=True,
+    )
+
     phone_value = (profile or {}).get("phone")
     needs_profile_completion = final_role != "admin" and (
         not phone_value or not str(phone_value).strip()
@@ -1072,6 +1482,7 @@ async def complete_google_code(
         profile,
         needs_profile_completion=needs_profile_completion,
         needs_phone_verification=False,
+        email_verified=True,
     )
     auth_response["message"] = "Google login successful"
 

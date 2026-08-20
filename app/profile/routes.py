@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends
 
-from app.core.auth_context import AuthContext, get_current_auth_context
+from app.core.auth_context import AuthContext, get_current_auth_context, require_verified_email
 from app.profile.schemas import AccountDeleteRequest, ProfileUpdate
 from app.profile.service import delete_current_account, get_current_profile, update_current_profile
 
@@ -27,4 +27,5 @@ async def delete_profile_me(
     payload: AccountDeleteRequest,
     context: AuthContext = Depends(get_current_auth_context),
 ):
+    require_verified_email(context)
     return delete_current_account(context, payload)

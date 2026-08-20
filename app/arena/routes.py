@@ -57,7 +57,7 @@ from app.arena.service import (
     upload_turf_media,
     track_arena_contact_event,
 )
-from app.core.auth_context import AuthContext, get_current_auth_context, get_optional_auth_context
+from app.core.auth_context import AuthContext, get_current_auth_context, get_optional_auth_context, require_verified_email
 
 router = APIRouter(prefix="/arenas", tags=["Arenas"])
 
@@ -135,6 +135,7 @@ async def authenticated_arena_contact(
     arena_id: str,
     context: AuthContext = Depends(get_current_auth_context),
 ):
+    require_verified_email(context)
     return get_arena_contact(context, arena_id)
 
 

@@ -38,6 +38,7 @@ REQUIRED_TABLES = (
     "analytics_events",
     "site_counters",
     "arena_contact_events",
+    "email_verifications",
 )
 
 

@@ -41,6 +41,14 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ResendVerificationRequest(BaseModel):
+    email: EmailStr
+
+
+class ConfirmEmailVerificationRequest(BaseModel):
+    token: str = Field(min_length=20)
+
+
 class RefreshSessionRequest(BaseModel):
     refresh_token: str = Field(min_length=1)
 

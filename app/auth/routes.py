@@ -3,6 +3,7 @@ from urllib.parse import urlencode
 
 from fastapi import (
     APIRouter,
+    Depends,
     HTTPException,
     Query,
     Header,
@@ -12,7 +13,9 @@ from fastapi.responses import RedirectResponse
 
 from app.auth.schemas import (
     LoginRequest,
+    ConfirmEmailVerificationRequest,
     RefreshSessionRequest,
+    ResendVerificationRequest,
     SignupRequest,
     SignupRole,
     OAuthCompleteRequest,
@@ -20,19 +23,24 @@ from app.auth.schemas import (
     PhoneOtpVerifyRequest,
 )
 from app.auth.service import (
+    GOOGLE_ACCOUNT_NOT_REGISTERED_CODE,
+    GOOGLE_ACCOUNT_NOT_REGISTERED_MESSAGE,
     complete_google_code,
+    confirm_application_email,
     consume_google_ticket,
     get_default_frontend_url,
     get_frontend_url_from_oauth_ticket,
     get_google_oauth_url,
     login_user,
     refresh_user_session,
+    resend_signup_verification,
     signup_user,
     complete_oauth_profile,
     send_phone_otp,
     verify_phone_otp,
 )
 from app.core.config import settings
+from app.core.auth_context import AuthContext, get_current_auth_context
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +51,16 @@ def _frontend_callback_url(
 ):
     base_url = frontend_url or settings.FRONTEND_URL
     return f"{base_url}/auth/callback?{urlencode(params)}"
+
+
+def _google_callback_error_params(exc: HTTPException):
+    params = {"error": str(exc.detail)}
+    if (
+        exc.status_code == 404
+        and exc.detail == GOOGLE_ACCOUNT_NOT_REGISTERED_MESSAGE
+    ):
+        params["error_code"] = GOOGLE_ACCOUNT_NOT_REGISTERED_CODE
+    return params
 
 router = APIRouter(
     prefix="/auth",
@@ -151,6 +169,21 @@ async def login(
         )
 
 
+@router.post("/resend-verification")
+async def resend_verification(
+    payload: ResendVerificationRequest,
+    context: AuthContext = Depends(get_current_auth_context),
+):
+    if payload.email.strip().lower() != str(context.user.email or "").strip().lower():
+        raise HTTPException(status_code=403, detail="Email does not match this account")
+    return await resend_signup_verification(payload.email)
+
+
+@router.post("/verify-email")
+async def verify_email(payload: ConfirmEmailVerificationRequest):
+    return await confirm_application_email(payload.token)
+
+
 @router.post("/refresh")
 async def refresh_session(payload: RefreshSessionRequest):
     return await refresh_user_session(payload.refresh_token)
@@ -235,9 +268,10 @@ async def google_auth(
             except HTTPException as exc:
                 logger.exception("Google code exchange failed")
                 return RedirectResponse(
-                    _frontend_callback_url({
-                        "error": str(exc.detail),
-                    }, resolved_frontend_url)
+                    _frontend_callback_url(
+                        _google_callback_error_params(exc),
+                        resolved_frontend_url,
+                    )
                 )
 
             return RedirectResponse(
@@ -340,9 +374,10 @@ async def google_callback(
     except HTTPException as exc:
         logger.exception("Google callback code exchange failed")
         return RedirectResponse(
-            _frontend_callback_url({
-                "error": str(exc.detail),
-            }, resolved_frontend_url)
+            _frontend_callback_url(
+                _google_callback_error_params(exc),
+                resolved_frontend_url,
+            )
         )
     except Exception:
         logger.exception("Google callback failed unexpectedly")

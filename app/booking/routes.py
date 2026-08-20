@@ -10,7 +10,7 @@ from app.booking.service import (
     simulate_payment,
     update_booking_status,
 )
-from app.core.auth_context import AuthContext, get_current_auth_context
+from app.core.auth_context import AuthContext, get_current_auth_context, require_verified_email
 
 router = APIRouter(prefix="/bookings", tags=["Bookings"])
 
@@ -34,6 +34,7 @@ async def player_create_booking(
     payload: BookingCreate,
     context: AuthContext = Depends(get_current_auth_context),
 ):
+    require_verified_email(context)
     return create_booking(context, payload)
 
 
@@ -68,4 +69,5 @@ async def player_simulate_payment(
     payload: PaymentCreate,
     context: AuthContext = Depends(get_current_auth_context),
 ):
+    require_verified_email(context)
     return simulate_payment(context, booking_id, payload)
